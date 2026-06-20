@@ -13,9 +13,17 @@
 | **全长 / bulk** | `cdna` | ✅ | 1400–2800 nt | **GTF 提取 3'UTR / CDS** |
 | **原生 isoform** | `isoform_3utr` / `isoform_spliced_3utr` / `reported_3utr_..._fragment` / `isoform_3utr_TableS7` / `ALE_genomic_interval` / **空** | 视源 | ~600–1000 nt | **本身就是 3'UTR，原样用** |
 
-**分流规则（`apply_region` 已实现并验证）**：跑 `--region utr3` 时**只有显式标了 `cdna/transcript/mrna`
-的行才 GTF 提取**，其余(含 ALE、空 seqtype)一律当已是 3'UTR 原样通过；`--region cds` 时全长行提 CDS、
-其余无 CDS 丢弃。用真实 6 源 13491 行验证：utr3 全部 passthrough、cds 全丢、混合时 cdna 正确提取。
+**分流规则（`apply_region` 已实现并验证）**：跑 `--region utr3` 时——
+(1) `--native-region-sources` 命中的源、或 seqtype 含 `3utr/utr3/ale/genomic_interval` 标记 → **原样通过**；
+(2) `cdna/transcript/mrna` → **GTF 提取 3'UTR**；
+(3) **空 `sequence_type` → 默认当全长去 GTF 提取**(不再 passthrough)。
+`--region cds` 时全长行提 CDS,其余(含 3'UTR/ALE/空)无 CDS → 丢弃。
+
+> ⚠️ **空 seqtype 有歧义**:它既可能是原生 3'UTR(Andreassi)，也可能是合并文件里的全长 bulk 代表转录本。
+> 若默认 passthrough,后者会被**当全长喂进 3'UTR 实验、silently 污染**。故默认改为"空→当全长提取"(misclassify
+> 时会变成"不在 GTF→丢弃",loud 可见),并用 `--native-region-sources <子串...>` 显式标出真正的原生 3'UTR 源
+> (含 blank 的 Andreassi 必须列出)。被路由到 blank-提取的源会打印出来供核对。
+> 已用单元测试验证:blank bulk→提取、native 源(含 blank Ciolli/Andreassi)→通过、cdna→提取。
 
 ### isoform 水平数据（完整 6 源）
 

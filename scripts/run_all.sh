@@ -33,6 +33,11 @@ OUT=results
 SPLIT_DIR=$OUT/_frozen_splits
 COMMON=(--label-scheme soma_vs_neurite --label-agg soft --source-mask
         --classifier logistic --min-support 150 --seed 0 --ortholog-map "$ORTHO")
+
+# 原生 3'UTR 源(已是 3'UTR,跑 --region utr3 时原样通过,不 GTF 提取)。
+# 含 blank sequence_type 的 Andreassi 必须在此列出,否则会被当全长去提取。
+# 子串大小写不敏感匹配 source 列;按你数据的 source 取值核对。
+NATIVE=(andreassi taliaferro ciolli tushev mikl isodend)
 mkdir -p "$SPLIT_DIR"
 
 # ---------------------------------------------------------------------------
@@ -41,7 +46,8 @@ mkdir -p "$SPLIT_DIR"
 make_splits() {
   echo "### split U1 (utr3, gene) — Track 1A/1B 共用"
   $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level gene \
-    --gtf "${GTF[@]}" --model-dir "$M_RNAFM" "${COMMON[@]}" --output-dir "$SPLIT_DIR/U1_gene"
+    --gtf "${GTF[@]}" --native-region-sources "${NATIVE[@]}" \
+    --model-dir "$M_RNAFM" "${COMMON[@]}" --output-dir "$SPLIT_DIR/U1_gene"
   cp "$SPLIT_DIR/U1_gene/split_assignments.csv" "$SPLIT_DIR/split_U1_gene.csv"
 
   echo "### split U2 (cds, gene) — Track 2 / 消融"
@@ -64,7 +70,8 @@ make_splits() {
 track1a() {
   local SP="$SPLIT_DIR/split_U1_gene.csv" O="$OUT/track1a_gene"
   local base=(--input-dir "$INPUT_DIR" --region utr3 --sample-level gene
-              --gtf "${GTF[@]}" "${COMMON[@]}" --split-assignments "$SP")
+              --gtf "${GTF[@]}" --native-region-sources "${NATIVE[@]}"
+              "${COMMON[@]}" --split-assignments "$SP")
   $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
   $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 2000      --output-dir "$O/rnatracker"
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 2000      --output-dir "$O/dm3loc"
@@ -79,7 +86,8 @@ track1a() {
 track1b() {
   local SP="$SPLIT_DIR/split_U1_gene.csv" O="$OUT/track1b_isoform"
   local base=(--input-dir "$INPUT_DIR" --region utr3 --sample-level isoform_sequence_union
-              --gtf "${GTF[@]}" "${COMMON[@]}" --split-assignments "$SP")
+              --gtf "${GTF[@]}" --native-region-sources "${NATIVE[@]}"
+              "${COMMON[@]}" --split-assignments "$SP")
   $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
   $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 2000      --output-dir "$O/rnatracker"
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 2000      --output-dir "$O/dm3loc"
@@ -124,8 +132,9 @@ ablation() {
   local SP="$SPLIT_DIR/split_Uablate_gene.csv"
   for R in utr3 cds full; do
     local extra=(); [ "$R" != "full" ] && extra=(--gtf "${GTF[@]}")
+    local nat=(); [ "$R" = "utr3" ] && nat=(--native-region-sources "${NATIVE[@]}")
     $PY $TRAIN --input-dir "$INPUT_DIR" --region "$R" --sample-level gene \
-      "${extra[@]}" "${COMMON[@]}" --split-assignments "$SP" \
+      "${extra[@]}" "${nat[@]}" "${COMMON[@]}" --split-assignments "$SP" \
       --model-dir "$M_RNAFM" --max-tokens 1022 --output-dir "$OUT/ablation_region/rnafm_$R" || \
       echo "[ablation] region=$R 有基因不在 cds 交集——如需严格交集请只保留 cds 基因再跑。"
   done
@@ -141,7 +150,7 @@ fine() {
   # 3'UTR fine(全部数据,gene)
   local SP1="$SPLIT_DIR/split_U1_gene.csv" O1="$OUT/fine_utr3_gene"
   local b1=(--input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}"
-            "${C[@]}" --split-assignments "$SP1")
+            --native-region-sources "${NATIVE[@]}" "${C[@]}" --split-assignments "$SP1")
   $PY $TRAIN "${b1[@]}" --baseline kmer --kmer-k 4               --output-dir "$O1/kmer"
   $PY $TRAIN "${b1[@]}" --arch dm3loc --ts-max-len 2000          --output-dir "$O1/dm3loc"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O1/rnafm"

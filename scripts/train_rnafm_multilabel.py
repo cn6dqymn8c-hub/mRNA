@@ -98,8 +98,9 @@ def collect_observed_labels(df: pd.DataFrame) -> set[str]:
 # sequence_type classification (drives region routing)
 # ----------------------------------------------------------------------------
 def seqtype_is_fulllength(st: str) -> bool:
-    """Rows we GTF-extract from. ONLY explicit full-length markers qualify; a
-    blank/unknown sequence_type is treated as already-in-region (passthrough)."""
+    """True only for explicit full-length markers (cdna/transcript/mrna/full).
+    A blank sequence_type returns False here and is handled separately in
+    apply_region (defaults to extraction, overridable via --native-region-sources)."""
     s = str(st).lower().strip()
     return ("cdna" in s) or ("transcript" in s) or ("mrna" in s) or ("full" in s)
 
@@ -159,26 +160,57 @@ def build_utr_length_map(gtf_paths) -> tuple[dict, dict]:
     return L5, L3
 
 
-def apply_region(rep: pd.DataFrame, region: str, L5map: dict, L3map: dict) -> pd.DataFrame:
-    """Harmonize each row to `region`, routed by sequence_type. See module docstring."""
+def seqtype_is_native_utr3(st: str) -> bool:
+    """Sequence already IS a 3'UTR-level region (isoform 3'UTR / spliced 3'UTR /
+    reporter fragment / ALE interval). Passes through unchanged under utr3."""
+    s = str(st).lower()
+    return (("3utr" in s) or ("utr3" in s) or ("three_prime" in s)
+            or ("ale" in s) or ("genomic_interval" in s) or ("last_exon" in s))
+
+
+def apply_region(rep: pd.DataFrame, region: str, L5map: dict, L3map: dict,
+                 native_sources=None) -> pd.DataFrame:
+    """Harmonize each row to `region`, routed by sequence_type + an explicit
+    per-source override.
+
+    A BLANK sequence_type is AMBIGUOUS: it can mean a native 3'UTR (e.g. Andreassi
+    isoform 3'UTRs) OR a full-length bulk cDNA representative (e.g. rows in a merged
+    bulk+isoform file). To avoid silently feeding a full-length transcript into a
+    3'UTR experiment, a blank/unknown sequence_type DEFAULTS to GTF-extraction
+    (i.e. treated as full-length). Use ``native_sources`` (CLI --native-region-sources)
+    to name sources whose rows are already in the requested region and must pass
+    through untouched. Blank rows that were routed to extraction are reported so
+    misclassification is visible, not silent.
+    """
     if region == "full":
         return rep
+    native = {str(s).strip().lower() for s in (native_sources or []) if str(s).strip()}
+
+    def is_native_src(src):
+        srcl = str(src).strip().lower()
+        return any(tok in srcl for tok in native) if native else False
+
     rep = rep.copy()
-    st_col = (
-        rep["sequence_type"].astype(str)
-        if "sequence_type" in rep.columns
-        else pd.Series([""] * len(rep), index=rep.index)
-    )
+    st_col = (rep["sequence_type"].astype(str) if "sequence_type" in rep.columns
+              else pd.Series([""] * len(rep), index=rep.index))
+    src_col = (rep["source"].astype(str) if "source" in rep.columns
+               else pd.Series([""] * len(rep), index=rep.index))
     seqs = []
     n_pass = n_extract = n_missing = n_bad = n_wrongtype = 0
+    blank_extracted = {}
 
-    for st, tid_full, s in zip(
-        st_col, rep["transcript_id"].astype(str), rep["sequence"].astype(str)
+    for src, st, tid_full, s in zip(
+        src_col, st_col, rep["transcript_id"].astype(str), rep["sequence"].astype(str)
     ):
         n = len(s)
         if region == "utr3":
-            if not seqtype_is_fulllength(st):
+            if is_native_src(src) or seqtype_is_native_utr3(st):
                 seqs.append(s); n_pass += 1; continue
+            blank = str(st).strip() == ""
+            if not (seqtype_is_fulllength(st) or blank):
+                seqs.append(None); n_wrongtype += 1; continue   # e.g. cds-only row
+            if blank:
+                blank_extracted[str(src)] = blank_extracted.get(str(src), 0) + 1
             tid = tid_full.split(".")[0]
             l3 = L3map.get(tid)
             if tid == "" or l3 is None:
@@ -187,10 +219,10 @@ def apply_region(rep: pd.DataFrame, region: str, L5map: dict, L3map: dict) -> pd
                 seqs.append(None); n_bad += 1; continue
             seqs.append(s[n - l3:]); n_extract += 1
         else:  # cds
-            if seqtype_is_cds(st):
+            if seqtype_is_cds(st) or (is_native_src(src) and seqtype_is_cds(st)):
                 seqs.append(s); n_pass += 1; continue
             if not seqtype_is_fulllength(st):
-                seqs.append(None); n_wrongtype += 1; continue
+                seqs.append(None); n_wrongtype += 1; continue   # 3'UTR/ALE/blank has no usable CDS
             tid = tid_full.split(".")[0]
             l5 = L5map.get(tid)
             l3 = L3map.get(tid)
@@ -208,6 +240,12 @@ def apply_region(rep: pd.DataFrame, region: str, L5map: dict, L3map: dict) -> pd
         f"(native_passthrough={n_pass}, gtf_extracted={n_extract}, "
         f"not_in_gtf={n_missing}, bad_coords={n_bad}, wrong_seqtype={n_wrongtype})"
     )
+    if blank_extracted:
+        print(
+            f"[region={region}] blank sequence_type -> GTF-extraction (treated as "
+            f"full-length): {blank_extracted}. If any of these sources are native "
+            f"{region} sequences, pass --native-region-sources to keep them untouched."
+        )
     return rep[kept].copy()
 
 
@@ -1422,6 +1460,13 @@ def main():
         "data_训练/Mus_musculus.GRCm39.116.gtf.gz",
         "data_训练/Rattus_norvegicus.GRCr8.116.gtf.gz",
     ], help="Ensembl GTF(s) for UTR-length lookup (only used when --region != full)")
+    ap.add_argument("--native-region-sources", nargs="*", default=[],
+                    help="source-name substrings whose rows are ALREADY in --region "
+                    "(e.g. native isoform 3'UTR sources). They pass through untouched "
+                    "regardless of sequence_type. Everything else with a blank "
+                    "sequence_type is treated as full-length and GTF-extracted, so a "
+                    "merged bulk+isoform file's blank-tagged bulk transcripts are not "
+                    "silently used at full length under --region utr3.")
     ap.add_argument("--label-scheme", choices=["soma_vs_neurite", "fine"], default="soma_vs_neurite")
     ap.add_argument("--keep-assay-labels", action="store_true")
     ap.add_argument("--label-agg", choices=["consensus", "majority", "soft", "union"], default="soft")
@@ -1499,7 +1544,8 @@ def main():
     all_rows = load_all_rows(args.input_dir)
     if args.region != "full":
         L5map, L3map = build_utr_length_map(args.gtf)
-        all_rows = apply_region(all_rows, args.region, L5map, L3map)
+        all_rows = apply_region(all_rows, args.region, L5map, L3map,
+                                native_sources=args.native_region_sources)
         if len(all_rows) == 0:
             raise SystemExit(f"[error] region={args.region}: 0 rows survived region harmonization.")
 
