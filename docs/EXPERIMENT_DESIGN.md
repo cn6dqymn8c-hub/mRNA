@@ -56,7 +56,7 @@ isoform 判别结论**必须先扣长度**(§5)。
 | **定位专用(重训)** | DM3Loc 式 | `--arch dm3loc` | one-hot | 任意 |
 | RNA 基础模型 | UTR-BERT | `--model-dir <utrbert>` | 3-mer nt(≈508) | utr3 |
 | RNA 基础模型 | RNA-FM | `--model-dir <rnafm>` | nt(≈1022) | utr3 / cds / full |
-| RNA 基础模型 | mRNA-FM | `--model-dir <rnafm_codon>` | **codon（需阅读框）** | **仅 cds / full** |
+| RNA 基础模型 | mRNA-FM | `--model-dir <rnafm_codon>` | **codon（需阅读框）** | **仅 cds** |
 | DNA 基础模型 | DNABERT-2 | `--model-dir <DNABERT-2-117M>` | BPE nt(ALiBi 长程) | utr3 / cds / full |
 
 - **DNABERT-2 不再单独跑**：`load_model` 检测目录名含 `dnabert` 即走非-multimolecule 分支(nt/token=1、
@@ -65,6 +65,10 @@ isoform 判别结论**必须先扣长度**(§5)。
 - **定位专用架构**(`--arch rnatracker|dm3loc`)从零训练于 one-hot，用与基础模型**完全相同**的
   split/标签/masked-BCE/评估，作"FM vs 专用 vs k-mer"对照。长度由 `--ts-max-len` 控制。
   注：是 RNATracker/DM3Loc 的**紧凑复现**(非原版权重)，作受控基线。
+- **mRNA-FM 仅 cds，不进 full**：codon tokenizer 需阅读框；`apply_region` 提取的 CDS 起点是起始密码子
+  (in-frame)，token=真实密码子。而 full 含任意长 5'UTR，从位置 0 切三联体会**与真实帧错位**、且 UTR 无
+  密码子结构，codon 解释不干净。故 Track 3(full)不含 mRNA-FM；只有 nt/BPE 模型(RNA-FM/DNABERT-2)与
+  one-hot/k-mer 可吃 full。
 
 ---
 
