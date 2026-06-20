@@ -1469,6 +1469,10 @@ def main():
                     "silently used at full length under --region utr3.")
     ap.add_argument("--label-scheme", choices=["soma_vs_neurite", "fine"], default="soma_vs_neurite")
     ap.add_argument("--keep-assay-labels", action="store_true")
+    ap.add_argument("--species", nargs="*", default=None,
+                    help="keep only these species (canonical: mouse/rat/human). "
+                    "Default keeps all. e.g. --species mouse rat drops the tiny human "
+                    "slice for a clean rodent benchmark.")
     ap.add_argument("--label-agg", choices=["consensus", "majority", "soft", "union"], default="soft")
     ap.add_argument("--min-label-sources", type=int, default=1)
     ap.add_argument("--sample-level",
@@ -1515,6 +1519,11 @@ def main():
     ap.add_argument("--split-assignments", type=Path, default=None,
                     help="reuse a frozen split (a previous run's split_assignments.csv) "
                     "so multiple models/scripts compare on the EXACT same partition.")
+    ap.add_argument("--train-on-all", action="store_true",
+                    help="DEPLOYMENT fit: train the head on ALL samples (no held-out "
+                    "test). Reported metrics become IN-SAMPLE; use this only to build "
+                    "the final shipped artifact after selecting the config on a frozen "
+                    "split. The honest test number must come from the benchmark run.")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
@@ -1542,6 +1551,13 @@ def main():
         args.device = "cpu"
 
     all_rows = load_all_rows(args.input_dir)
+    if args.species:
+        keep = {canonical_species(s) for s in args.species}
+        before = len(all_rows)
+        all_rows = all_rows[all_rows["species"].map(canonical_species).isin(keep)].copy()
+        print(f"[species] kept {len(all_rows)}/{before} rows for species={sorted(keep)}")
+        if len(all_rows) == 0:
+            raise SystemExit(f"[error] no rows for --species {args.species}")
     if args.region != "full":
         L5map, L3map = build_utr_length_map(args.gtf)
         all_rows = apply_region(all_rows, args.region, L5map, L3map,
@@ -1655,6 +1671,14 @@ def main():
             Y, groups, label_mask_full, args.seed, attempts=args.split_attempts,
         )
 
+    if args.train_on_all:
+        print("[train-on-all] DEPLOYMENT fit: head trained on ALL samples; reported "
+              "metrics are IN-SAMPLE, NOT a held-out test. Use the benchmark run's "
+              "frozen-split metrics for reporting; this run only produces the artifact.")
+        all_idx = np.arange(len(genes))
+        tr_idx = va_idx = te_idx = all_idx
+        split_score = float("nan")
+
     make_split_support_table(Y, label_mask_full, classes, tr_idx, va_idx, te_idx).to_csv(
         args.output_dir / "split_label_support.csv", index=False
     )
@@ -1694,6 +1718,12 @@ def main():
 
     thresholds = pick_thresholds(Y[va_idx], prob_va, classes, label_mask=label_mask_full[va_idx])
     per, overall = evaluate(Y[te_idx], prob_te, classes, thresholds, label_mask=label_mask_full[te_idx])
+    # Validation metrics are recorded so model SELECTION can use val (never test).
+    # Threshold-free metrics (macro_roc_auc / macro_pr_auc) on val are the honest
+    # selection criterion; val F1 is mildly optimistic (thresholds picked on val).
+    per_val, overall_val = evaluate(
+        Y[va_idx], prob_va, classes, thresholds, label_mask=label_mask_full[va_idx]
+    )
 
     prior = np.zeros(len(classes), dtype=float)
     for j in range(len(classes)):
@@ -1709,10 +1739,12 @@ def main():
         np.full(len(classes), 0.5), label_mask=label_mask_full[te_idx],
     )
 
-    overall.update({"model": run_name, "split_score": split_score,
-                    "n_train": int(len(tr_idx)), "n_val": int(len(va_idx)), "n_test": int(len(te_idx))})
-    ov_prior.update({"model": "label_prior_probability", "split_score": split_score})
-    ov_zero.update({"model": "all_zero", "split_score": split_score})
+    meta = {"model": run_name, "split_score": split_score, "n_train": int(len(tr_idx)),
+            "n_val": int(len(va_idx)), "n_test": int(len(te_idx))}
+    overall.update(meta); overall["split"] = "test"
+    overall_val.update(meta); overall_val["split"] = "val"
+    ov_prior.update({"model": "label_prior_probability", "split_score": split_score, "split": "test"})
+    ov_zero.update({"model": "all_zero", "split_score": split_score, "split": "test"})
     per_prior["model"] = "label_prior_probability"
     per_zero["model"] = "all_zero"
     per["model"] = run_name
@@ -1721,7 +1753,8 @@ def main():
     pd.concat([per_prior, per_zero], ignore_index=True).to_csv(
         args.output_dir / "baseline_per_label_metrics.csv", index=False
     )
-    pd.DataFrame([overall, ov_prior, ov_zero]).to_csv(
+    # val row first so select_best can pick on validation without touching test.
+    pd.DataFrame([overall_val, overall, ov_prior, ov_zero]).to_csv(
         args.output_dir / "overall_metrics.csv", index=False
     )
     pd.DataFrame({"label": classes, "threshold": thresholds}).to_csv(

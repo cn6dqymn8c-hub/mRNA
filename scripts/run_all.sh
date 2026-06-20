@@ -26,13 +26,19 @@ GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz
 
 M_RNAFM=./rnafm            # RNA-FM   (nt; utr3/cds/full)
 M_MRNAFM=./rnafm_codon     # mRNA-FM  (codon; 仅 cds)
+M_MRNABERT=./mrnabert      # mRNABERT (按其 config.codon 自动判定;若 codon 则同 mRNA-FM 仅 cds,
+                           #           若 nt 则可进 utr3/cds/full —— 确认后挪到对应 track)
 M_UTRBERT=./utrbert-3mer   # UTR-BERT (仅 utr3)
 M_DNABERT=./DNABERT-2-117M # DNABERT-2(nt; utr3/cds/full;同脚本加载,名字含 "dnabert" 即走专用分支)
 
 OUT=results
 SPLIT_DIR=$OUT/_frozen_splits
+# 物种范围:human 仅 ~289 基因、无法做有意义的 per-species 评估,默认只用 mouse+rat
+# 做干净的"啮齿类"benchmark。想保留 human 就把这行设为空: SPECIES=()
+SPECIES=(--species mouse rat)
 COMMON=(--label-scheme soma_vs_neurite --label-agg soft --source-mask
-        --classifier logistic --min-support 150 --seed 0 --ortholog-map "$ORTHO")
+        --classifier logistic --min-support 150 --seed 0 --ortholog-map "$ORTHO"
+        "${SPECIES[@]}")
 
 # 原生 3'UTR 源(已是 3'UTR,跑 --region utr3 时原样通过,不 GTF 提取)。
 # 含 blank sequence_type 的 Andreassi 必须在此列出,否则会被当全长去提取。
@@ -108,6 +114,7 @@ track2() {
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 4000      --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"  --max-tokens 1022 --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_MRNAFM" --max-tokens 1024 --output-dir "$O/mrnafm"
+  $PY $TRAIN "${base[@]}" --model-dir "$M_MRNABERT" --max-tokens 1024 --output-dir "$O/mrnabert"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
 }
 
