@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -74,10 +75,51 @@ def _load(results_dir: Path):
     return pd.DataFrame(rows)
 
 
+def _bootstrap_batch(df, results_dir, label, metric, n_boot, seed):
+    """Per track: best non-kmer model vs kmer; for the region ablation: pairwise
+    region compare (same RNA-FM). Returns a significance DataFrame."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from bootstrap_ci import bootstrap_compare
+    from pathlib import Path
+
+    mcol = f"val_{metric}"
+    rows = []
+    for track, g in df.groupby("track"):
+        if "ablation" in track:
+            g = g.copy()
+            g["region_"] = g["region"].fillna(g["model"].str.extract(r"(utr3|cds|full)")[0])
+            reg = {r["region_"]: r["run_dir"] for _, r in g.iterrows()}
+            for x, y in [("full", "utr3"), ("cds", "utr3"), ("full", "cds")]:
+                if x in reg and y in reg:
+                    r = bootstrap_compare(reg[x], reg[y], label, metric, n_boot, seed)
+                    if r:
+                        rows.append({"track": track, "A": x, "B": y, **r})
+            continue
+        kmer = g[g["model"].str.contains("kmer", case=False, na=False)]
+        cand = g[~g["model"].str.contains("kmer", case=False, na=False)]
+        if kmer.empty or cand.empty:
+            continue
+        best = cand.sort_values(mcol, ascending=False).iloc[0]
+        r = bootstrap_compare(best["run_dir"], kmer.iloc[0]["run_dir"], label, metric, n_boot, seed)
+        if r:
+            rows.append({"track": track, "A": best["model"], "B": "kmer", **r})
+    return pd.DataFrame(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", type=Path, default=Path("results"))
     ap.add_argument("--metric", default="pr_auc", choices=["pr_auc", "roc_auc"])
+    ap.add_argument("--bootstrap", action="store_true",
+                    help="also run a group bootstrap per track (best-vs-kmer) + region "
+                    "ablation pairwise, and write bootstrap_significance.csv")
+    ap.add_argument("--boot-metric", default="roc_auc", choices=["roc_auc", "pr_auc"],
+                    help="metric for the bootstrap (roc_auc is prior-robust)")
+    ap.add_argument("--boot-label", default="is_neurite",
+                    help="label to test (binary task = is_neurite; fine = a class name)")
+    ap.add_argument("--n-boot", type=int, default=2000)
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     df = _load(args.results_dir)
@@ -91,6 +133,21 @@ def main():
     cols = ["track", "model", "region", f"val_{args.metric}", f"test_{args.metric}", "prior_pr_auc", "n_test"]
     print(df[cols].to_string(index=False))
     print(f"\nSaved {out_csv}")
+
+    if args.bootstrap:
+        print(f"\n=== group bootstrap ({args.boot_metric}, label={args.boot_label}, "
+              f"n_boot={args.n_boot}) ===")
+        bt = _bootstrap_batch(df, args.results_dir, args.boot_label, args.boot_metric,
+                              args.n_boot, args.seed)
+        if bt.empty:
+            print("[bootstrap] no comparable runs with test_predictions.csv found. "
+                  "Re-run training (it now saves test_predictions.csv).")
+        else:
+            show = ["track", "A", "B", "A_metric", "B_metric", "diff", "ci_lo", "ci_hi", "p", "significant"]
+            print(bt[show].to_string(index=False))
+            bp = args.results_dir / "bootstrap_significance.csv"
+            bt.to_csv(bp, index=False)
+            print(f"Saved {bp}")
 
     try:
         import matplotlib

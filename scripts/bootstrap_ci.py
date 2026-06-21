@@ -7,13 +7,12 @@ are scored on the SAME test samples, then resamples SPLIT GROUPS with replacemen
 (respecting the leakage-safe grouping — never individual correlated samples) to get
 a 95% CI and bootstrap p-value for (metric_A - metric_B).
 
-Usage:
+CLI (single comparison):
     python scripts/bootstrap_ci.py \
         --a results/track3_full/rnafm --b results/track3_full/kmer \
         --label is_neurite --metric roc_auc --n-boot 2000
 
-For fine multi-label runs pass --label Cell_body (etc.). Default label = is_neurite
-(the binary soma-vs-neurite task).
+Also exposes bootstrap_compare(...) for batch use by summarize_results.py.
 """
 from __future__ import annotations
 
@@ -33,6 +32,53 @@ def _metric(y, s, name):
     return roc_auc_score(y, s) if name == "roc_auc" else average_precision_score(y, s)
 
 
+def bootstrap_compare(a_dir, b_dir, label="is_neurite", metric="roc_auc",
+                      n_boot=2000, seed=0):
+    """Return a dict with observed metrics, diff, 95% CI, bootstrap p, or None if
+    predictions are missing / the label is absent / there is no overlap."""
+    pa, pb = Path(a_dir) / "test_predictions.csv", Path(b_dir) / "test_predictions.csv"
+    if not pa.exists() or not pb.exists():
+        return None
+    A, B = pd.read_csv(pa), pd.read_csv(pb)
+    yk, mk, pk = f"y_{label}", f"mask_{label}", f"prob_{label}"
+    if pk not in A.columns or pk not in B.columns:
+        return None
+
+    key = ["species", "gene_name"]
+    m = A[key + ["split_group", yk, mk, pk]].merge(B[key + [pk]], on=key, suffixes=("_a", "_b"))
+    m = m[m[mk] == 1].reset_index(drop=True)
+    if len(m) == 0:
+        return None
+
+    groups = m["split_group"].to_numpy()
+    uniq = np.unique(groups)
+    gidx = {g: np.where(groups == g)[0] for g in uniq}
+    y = m[yk].to_numpy()
+    sa, sb = m[f"{pk}_a"].to_numpy(), m[f"{pk}_b"].to_numpy()
+
+    obs_a, obs_b = _metric(y, sa, metric), _metric(y, sb, metric)
+    rng = np.random.default_rng(seed)
+    diffs = []
+    for _ in range(n_boot):
+        pick = rng.choice(uniq, size=len(uniq), replace=True)
+        idx = np.concatenate([gidx[g] for g in pick])
+        da, db = _metric(y[idx], sa[idx], metric), _metric(y[idx], sb[idx], metric)
+        if np.isfinite(da) and np.isfinite(db):
+            diffs.append(da - db)
+    diffs = np.asarray(diffs)
+    lo, hi = (np.percentile(diffs, [2.5, 97.5]) if len(diffs) else (np.nan, np.nan))
+    p = min(2.0 * min((diffs <= 0).mean(), (diffs >= 0).mean()), 1.0) if len(diffs) else np.nan
+    return {
+        "metric": metric, "label": label,
+        "A_metric": round(float(obs_a), 4), "B_metric": round(float(obs_b), 4),
+        "diff": round(float(obs_a - obs_b), 4),
+        "ci_lo": round(float(lo), 4), "ci_hi": round(float(hi), 4),
+        "p": round(float(p), 4),
+        "n_eval": int(len(m)), "n_groups": int(len(uniq)),
+        "significant": bool(np.isfinite(lo) and (lo > 0 or hi < 0)),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--a", type=Path, required=True, help="run dir A (has test_predictions.csv)")
@@ -43,64 +89,19 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    def load(run):
-        p = Path(run) / "test_predictions.csv"
-        if not p.exists():
-            raise SystemExit(f"[error] {p} not found. Re-run training (it now saves "
-                             "test_predictions.csv).")
-        return pd.read_csv(p)
-
-    A, B = load(args.a), load(args.b)
-    yk, mk, pk = f"y_{args.label}", f"mask_{args.label}", f"prob_{args.label}"
-    for d, n in ((A, "A"), (B, "B")):
-        if pk not in d.columns:
-            raise SystemExit(f"[error] label '{args.label}' not in run {n}. "
-                             f"Available: {[c[5:] for c in d.columns if c.startswith('prob_')]}")
-
-    key = ["species", "gene_name"]
-    m = A[key + ["split_group", yk, mk, pk]].merge(
-        B[key + [pk]], on=key, suffixes=("_a", "_b"))
-    # keep only samples where the label is evaluable
-    m = m[m[mk] == 1].reset_index(drop=True)
-    if len(m) == 0:
-        raise SystemExit("[error] no overlapping evaluable test samples between A and B.")
-
-    groups = m["split_group"].to_numpy()
-    uniq = np.unique(groups)
-    gidx = {g: np.where(groups == g)[0] for g in uniq}
-    y = m[yk].to_numpy()
-    sa = m[f"{pk}_a"].to_numpy()
-    sb = m[f"{pk}_b"].to_numpy()
-
-    obs_a = _metric(y, sa, args.metric)
-    obs_b = _metric(y, sb, args.metric)
-    obs_d = obs_a - obs_b
-
-    rng = np.random.default_rng(args.seed)
-    diffs = []
-    for _ in range(args.n_boot):
-        pick = rng.choice(uniq, size=len(uniq), replace=True)
-        idx = np.concatenate([gidx[g] for g in pick])
-        da = _metric(y[idx], sa[idx], args.metric)
-        db = _metric(y[idx], sb[idx], args.metric)
-        if np.isfinite(da) and np.isfinite(db):
-            diffs.append(da - db)
-    diffs = np.asarray(diffs)
-    lo, hi = np.percentile(diffs, [2.5, 97.5])
-    # two-sided bootstrap p: how often the difference crosses 0
-    p = 2.0 * min((diffs <= 0).mean(), (diffs >= 0).mean())
-    p = min(p, 1.0)
-
+    r = bootstrap_compare(args.a, args.b, args.label, args.metric, args.n_boot, args.seed)
+    if r is None:
+        raise SystemExit("[error] missing test_predictions.csv, missing label, or no "
+                         "overlapping evaluable test samples. Re-run training to save "
+                         "test_predictions.csv.")
     print(f"=== {args.metric}  A={args.a.name}  B={args.b.name}  label={args.label} ===")
-    print(f"n_eval_samples={len(m)}  n_groups={len(uniq)}  n_boot={len(diffs)}")
-    print(f"A {args.metric} = {obs_a:.4f}")
-    print(f"B {args.metric} = {obs_b:.4f}")
-    print(f"observed diff (A-B) = {obs_d:+.4f}")
-    print(f"95% CI (group bootstrap) = [{lo:+.4f}, {hi:+.4f}]")
-    print(f"bootstrap p (two-sided) = {p:.3f}")
-    sig = (lo > 0) or (hi < 0)
-    print(f">>> {'SIGNIFICANT' if sig else 'NOT significant'} at 95% "
-          f"(CI {'excludes' if sig else 'includes'} 0)")
+    print(f"n_eval={r['n_eval']}  n_groups={r['n_groups']}")
+    print(f"A = {r['A_metric']:.4f}   B = {r['B_metric']:.4f}")
+    print(f"observed diff (A-B) = {r['diff']:+.4f}")
+    print(f"95% CI (group bootstrap) = [{r['ci_lo']:+.4f}, {r['ci_hi']:+.4f}]")
+    print(f"bootstrap p (two-sided) = {r['p']:.3f}")
+    print(f">>> {'SIGNIFICANT' if r['significant'] else 'NOT significant'} at 95% "
+          f"(CI {'excludes' if r['significant'] else 'includes'} 0)")
 
 
 if __name__ == "__main__":
