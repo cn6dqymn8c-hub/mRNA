@@ -26,8 +26,9 @@ GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz
 
 M_RNAFM=./rnafm            # RNA-FM   (nt; utr3/cds/full)
 M_MRNAFM=./rnafm_codon     # mRNA-FM  (codon; 仅 cds)
-M_MRNABERT=./mrnabert      # mRNABERT (按其 config.codon 自动判定;若 codon 则同 mRNA-FM 仅 cds,
-                           #           若 nt 则可进 utr3/cds/full —— 确认后挪到对应 track)
+M_MRNABERT=./mrnabert      # mRNABERT (Nature Comms 2025, YYLY66/mRNABERT): BERT+ALiBi,
+                           #   双 tokenization(UTR=nt, CDS=codon),为全长 mRNA 设计。
+                           #   主场 Track 3(full)+ cds;也能 utr3。custom_code,需 GPU smoke-test。
 M_UTRBERT=./utrbert-3mer   # UTR-BERT (仅 utr3)
 M_DNABERT=./DNABERT-2-117M # DNABERT-2(nt; utr3/cds/full;同脚本加载,名字含 "dnabert" 即走专用分支)
 
@@ -130,6 +131,7 @@ track3() {
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 6000      --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --window-pool mean --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
+  $PY $TRAIN "${base[@]}" --model-dir "$M_MRNABERT" --max-tokens 3000 --output-dir "$O/mrnabert"  # 全长主场
 }
 
 # ---------------------------------------------------------------------------

@@ -537,23 +537,27 @@ def load_model(model_dir: str, device: str):
                 "then pass that ABSOLUTE path to --model-dir.")
 
     name = os.path.basename(os.path.normpath(model_dir)).lower()
-    is_dnabert = "dnabert" in name
+    # ALiBi / long-context BERT-style RNA/DNA models (no hard positional cap, often
+    # variable nt-per-token tokenizers). DNABERT-2 (BPE) and mRNABERT (dual nt/codon
+    # tokenization, full-length) both fit here.
+    is_alibi = ("dnabert" in name) or ("mrnabert" in name)
     tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_dir, trust_remote_code=True).to(device).eval()
     is_codon = bool(getattr(model.config, "codon", False))
     max_pos = int(getattr(model.config, "max_position_embeddings", 1026))
-    if is_dnabert:
-        # DNABERT-2: BPE tokenizer (variable nt/token) + ALiBi (no hard positional
-        # cap). We window by NUCLEOTIDES (nt_per_token=1); BPE always yields fewer
-        # tokens than nt, so a window never overflows. _max_tokens is set generously
-        # so --max-tokens fully controls the per-window nt length.
+    if is_alibi:
+        # Window by NUCLEOTIDES (nt_per_token=1); these tokenizers compress to <= nt
+        # tokens, so a window never overflows. _max_tokens is generous so --max-tokens
+        # controls the per-window nt length. NOTE for mRNABERT: its dual nt/codon
+        # tokenization is region-aware; verify on a GPU smoke test that feeding a raw
+        # sequence tokenizes as intended for your region.
         model._nt_per_token = 1
         model._max_tokens = max(max_pos - 4, 4096) if max_pos > 16 else 4096
     else:
         model._nt_per_token = 3 if is_codon else 1
         model._max_tokens = max(8, max_pos - 4)
     print(f"[model] {model_dir} hidden={model.config.hidden_size} "
-          f"kind={'dnabert' if is_dnabert else ('codon' if is_codon else 'nt')} "
+          f"kind={'alibi' if is_alibi else ('codon' if is_codon else 'nt')} "
           f"nt_per_token={model._nt_per_token} max_pos={max_pos} "
           f"-> max_tokens_cap={model._max_tokens}")
     return tok, model
