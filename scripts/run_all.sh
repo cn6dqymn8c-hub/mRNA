@@ -172,8 +172,34 @@ fine() {
   $PY $TRAIN "${b3[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O3/dnabert2"
 }
 
+# ---------------------------------------------------------------------------
+# fusion —— 提出模型:RNA-FM 嵌入 ⊕ 工程特征,注意力融合头。每个 track 跑一个,
+#   之后用 bootstrap 比 fusion vs kmer,看能否成为"显著最优"。FM 块用 RNA-FM
+#   (它在 Track1B 是唯一显著超 k-mer 的);Track2 想试 codon 可把 M_RNAFM 换 M_MRNAFM。
+# ---------------------------------------------------------------------------
+fusion() {
+  local FB=(--arch fusion --features fm engineered --model-dir "$M_RNAFM")
+  # 1A: 3'UTR gene
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}" \
+    --native-region-sources "${NATIVE[@]}" "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U1_gene.csv" \
+    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track1a_gene/fusion"
+  # 1B: 3'UTR isoform (重点战场)
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level isoform_sequence_union --gtf "${GTF[@]}" \
+    --native-region-sources "${NATIVE[@]}" "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U1_gene.csv" \
+    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track1b_isoform/fusion"
+  # 2: CDS gene
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}" \
+    "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U2_gene.csv" \
+    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track2_gene/fusion"
+  # 3: full gene
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level gene \
+    "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U3_gene.csv" \
+    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track3_full/fusion"
+}
+
 case "${1:-all}" in
   splits)   make_splits ;;
+  fusion)   fusion ;;
   track1a)  track1a ;;
   track1b)  track1b ;;
   track2)   track2 ;;

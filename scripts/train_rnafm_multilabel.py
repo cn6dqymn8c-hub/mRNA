@@ -1521,10 +1521,11 @@ def main():
                     "include the 3'UTR-length CONFOUND (also run --features length as a "
                     "baseline to quantify it); 'structure' needs ViennaRNA.")
     # ---- feature family selector --------------------------------------------
-    ap.add_argument("--arch", choices=["fm", "rnatracker", "dm3loc"], default="fm",
+    ap.add_argument("--arch", choices=["fm", "rnatracker", "dm3loc", "fusion"], default="fm",
                     help="fm = foundation-model embeddings/finetune (default); "
-                    "rnatracker / dm3loc = purpose-built localization nets trained "
-                    "from scratch on one-hot sequence (same split/labels/eval).")
+                    "rnatracker / dm3loc = purpose-built localization nets on one-hot; "
+                    "fusion = attention-gated fusion of feature views (requires "
+                    "--features, e.g. --features fm engineered) — the proposed model.")
     ap.add_argument("--ts-max-len", type=int, default=4000, help="one-hot length for --arch nets")
     ap.add_argument("--ts-epochs", type=int, default=30)
     ap.add_argument("--ts-patience", type=int, default=5)
@@ -1565,6 +1566,9 @@ def main():
     args = ap.parse_args()
 
     is_task_specific = args.arch in ("rnatracker", "dm3loc")
+    is_fusion = args.arch == "fusion"
+    if is_fusion and not args.features:
+        raise SystemExit("[error] --arch fusion requires --features (e.g. --features fm engineered).")
 
     if args.selftest:
         import torch
@@ -1664,9 +1668,30 @@ def main():
     if args.features and (is_task_specific or args.finetune):
         raise SystemExit("[error] --features (stacked head) is not usable with --arch / --finetune.")
 
+    fusion_blocks_full = None
     if is_task_specific:
         feat_tag = args.arch
         emb_full = None
+    elif is_fusion:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from engineered_features import build_feature_block
+        seqs_all = genes["sequence"].tolist()
+        fusion_blocks_full, block_tags = [], []
+        for fblk in args.features:
+            if fblk == "fm":
+                model_tag = os.path.basename(os.path.normpath(args.model_dir))
+                emb_sig = (f"{model_tag}_{args.sample_level}_{args.region}_"
+                           f"{args.pool}_{args.window_pool}_{args.max_tokens}")
+                args.emb_cache_dir.mkdir(parents=True, exist_ok=True)
+                fusion_blocks_full.append(get_embeddings(genes, args, args.emb_cache_dir / f"emb_{emb_sig}.npy"))
+                block_tags.append(model_tag)
+            else:
+                X, tag = build_feature_block(fblk, seqs_all, kmer_k=args.kmer_k)
+                fusion_blocks_full.append(X.astype(np.float32))
+                block_tags.append(tag)
+        emb_full = None
+        feat_tag = "fusion(" + "+".join(block_tags) + ")"
     elif args.finetune:
         feat_tag = os.path.basename(os.path.normpath(args.model_dir))
         emb_full = None
@@ -1719,7 +1744,9 @@ def main():
         print("[source-mask fine] per-label evaluable coverage:",
               {c: round(float(label_mask_full[:, j].mean()), 3) for j, c in enumerate(classes)})
 
-    emb = None if (args.finetune or is_task_specific) else emb_full[genes["_uid"].to_numpy()]
+    emb = None if (args.finetune or is_task_specific or is_fusion) else emb_full[genes["_uid"].to_numpy()]
+    fusion_blocks = ([b[genes["_uid"].to_numpy()] for b in fusion_blocks_full]
+                     if is_fusion else None)
 
     ortholog_map = load_ortholog_map(args.ortholog_map)
     groups = build_leakage_safe_groups(genes, ortholog_map)
@@ -1739,6 +1766,8 @@ def main():
         groups = groups[keep]
         if emb is not None:
             emb = emb[keep]
+        if fusion_blocks is not None:
+            fusion_blocks = [b[keep] for b in fusion_blocks]
         genes["split_group"] = groups
         print(f"[restrict-to-split] kept {len(genes)}/{n0} samples present in the frozen split")
         if len(genes) == 0:
@@ -1772,7 +1801,17 @@ def main():
                           np.where(np.isin(np.arange(len(genes)), va_idx), "val", "test")),
     }).to_csv(args.output_dir / "split_assignments.csv", index=False)
 
-    if is_task_specific:
+    if is_fusion:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from fusion_model import train_fusion
+        prob_va, prob_te = train_fusion(
+            fusion_blocks, Y, classes, tr_idx, va_idx, te_idx, args,
+            sample_weight=sw_all, label_mask=label_mask_full,
+        )
+        scaler = models = None
+        run_name = f"{feat_tag}_{args.region}"
+    elif is_task_specific:
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from task_specific_models import train_task_specific
