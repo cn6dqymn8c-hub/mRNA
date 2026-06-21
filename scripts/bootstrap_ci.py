@@ -45,7 +45,29 @@ def bootstrap_compare(a_dir, b_dir, label="is_neurite", metric="roc_auc",
         return None
 
     key = ["species", "gene_name"]
-    m = A[key + ["split_group", yk, mk, pk]].merge(B[key + [pk]], on=key, suffixes=("_a", "_b"))
+    A = A.reset_index(drop=True)
+    B = B.reset_index(drop=True)
+    # Two runs in the same track share data/split/seed, so their test_predictions
+    # rows are in IDENTICAL order. Align by position — this is the only correct
+    # join at isoform level, where (species, gene_name) is NOT unique and a key
+    # merge would explode into a cartesian product.
+    same_order = (
+        len(A) == len(B)
+        and A["species"].astype(str).equals(B["species"].astype(str))
+        and A["gene_name"].astype(str).equals(B["gene_name"].astype(str))
+    )
+    if same_order:
+        m = A[["species", "gene_name", "split_group", yk, mk, pk]].rename(columns={pk: f"{pk}_a"})
+        m[f"{pk}_b"] = B[pk].to_numpy()
+    else:
+        # different order: only safe if the key is unique in both (gene-level)
+        if A.duplicated(key).any() or B.duplicated(key).any():
+            raise SystemExit(
+                "[error] runs are not in the same row order and (species, gene_name) is "
+                "not unique (isoform-level). Re-run both with the same config/seed so "
+                "their test_predictions rows align by position."
+            )
+        m = A[key + ["split_group", yk, mk, pk]].merge(B[key + [pk]], on=key, suffixes=("_a", "_b"))
     m = m[m[mk] == 1].reset_index(drop=True)
     if len(m) == 0:
         return None
