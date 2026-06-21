@@ -115,8 +115,8 @@ track2() {
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 4000      --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"  --max-tokens 1022 --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_MRNAFM" --max-tokens 1024 --output-dir "$O/mrnafm"
-  $PY $TRAIN "${base[@]}" --model-dir "$M_MRNABERT" --max-tokens 1024 --output-dir "$O/mrnabert"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
+  # mRNABERT 见 track3 注释:需专用 adapter,暂不走通用路径。
 }
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,9 @@ track3() {
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 6000      --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --window-pool mean --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
-  $PY $TRAIN "${base[@]}" --model-dir "$M_MRNABERT" --max-tokens 3000 --output-dir "$O/mrnabert"  # 全长主场
+  # mRNABERT 需区域感知双 tokenization(UTR=nt/CDS=codon,空格分隔,需 CDS 边界),
+  # 不能走通用路径喂原始序列(会被 silent 误切)。待写专用 adapter 后再启用:
+  # $PY $TRAIN "${base[@]}" --model-dir "$M_MRNABERT" --max-tokens 3000 --output-dir "$O/mrnabert"
 }
 
 # ---------------------------------------------------------------------------

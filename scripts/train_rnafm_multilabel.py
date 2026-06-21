@@ -537,20 +537,27 @@ def load_model(model_dir: str, device: str):
                 "then pass that ABSOLUTE path to --model-dir.")
 
     name = os.path.basename(os.path.normpath(model_dir)).lower()
-    # ALiBi / long-context BERT-style RNA/DNA models (no hard positional cap, often
-    # variable nt-per-token tokenizers). DNABERT-2 (BPE) and mRNABERT (dual nt/codon
-    # tokenization, full-length) both fit here.
-    is_alibi = ("dnabert" in name) or ("mrnabert" in name)
+    if "mrnabert" in name:
+        raise SystemExit(
+            "[error] mRNABERT (YYLY66/mRNABERT) is NOT supported by the generic path.\n"
+            "Its tokenizer expects REGION-DEMARCATED, space-separated input — UTR as "
+            "single nucleotides ('A T C G') and CDS as codons ('ATG GCC TTT'), with the\n"
+            "CDS boundary found upstream (e.g. ORFfinder). Feeding a raw sequence would "
+            "be silently mis-tokenized into garbage embeddings.\n"
+            "A dedicated mRNABERT adapter (CDS-aware dual formatting) is required; it is "
+            "not yet implemented. Remove mRNABERT from your run, or implement the adapter."
+        )
+    # ALiBi / long-context BERT-style models (no hard positional cap, variable
+    # nt-per-token). DNABERT-2 (BPE) fits here.
+    is_alibi = "dnabert" in name
     tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_dir, trust_remote_code=True).to(device).eval()
     is_codon = bool(getattr(model.config, "codon", False))
     max_pos = int(getattr(model.config, "max_position_embeddings", 1026))
     if is_alibi:
-        # Window by NUCLEOTIDES (nt_per_token=1); these tokenizers compress to <= nt
-        # tokens, so a window never overflows. _max_tokens is generous so --max-tokens
-        # controls the per-window nt length. NOTE for mRNABERT: its dual nt/codon
-        # tokenization is region-aware; verify on a GPU smoke test that feeding a raw
-        # sequence tokenizes as intended for your region.
+        # Window by NUCLEOTIDES (nt_per_token=1); BPE compresses to <= nt tokens, so a
+        # window never overflows. _max_tokens is generous so --max-tokens controls the
+        # per-window nt length.
         model._nt_per_token = 1
         model._max_tokens = max(max_pos - 4, 4096) if max_pos > 16 else 4096
     else:
