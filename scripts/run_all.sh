@@ -26,11 +26,10 @@ GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz
 
 M_RNAFM=./rnafm            # RNA-FM   (nt; utr3/cds/full)
 M_MRNAFM=./rnafm_codon     # mRNA-FM  (codon; 仅 cds)
-M_MRNABERT=./mrnabert      # mRNABERT (Nature Comms 2025, YYLY66/mRNABERT): BERT+ALiBi,
-                           #   双 tokenization(UTR=nt, CDS=codon),为全长 mRNA 设计。
-                           #   主场 Track 3(full)+ cds;也能 utr3。custom_code,需 GPU smoke-test。
 M_UTRBERT=./utrbert-3mer   # UTR-BERT (仅 utr3)
 M_DNABERT=./DNABERT-2-117M # DNABERT-2(nt; utr3/cds/full;同脚本加载,名字含 "dnabert" 即走专用分支)
+# 注:mRNABERT 未纳入——它需区域感知双 tokenization(UTR=nt/CDS=codon,空格分隔,需 CDS 边界),
+#     与本受控单序列管线不兼容;若日后写专用 adapter 再加。
 
 OUT=results
 SPLIT_DIR=$OUT/_frozen_splits
@@ -116,7 +115,6 @@ track2() {
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"  --max-tokens 1022 --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_MRNAFM" --max-tokens 1024 --output-dir "$O/mrnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
-  # mRNABERT 见 track3 注释:需专用 adapter,暂不走通用路径。
 }
 
 # ---------------------------------------------------------------------------
@@ -131,9 +129,6 @@ track3() {
   $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 6000      --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --window-pool mean --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
-  # mRNABERT 需区域感知双 tokenization(UTR=nt/CDS=codon,空格分隔,需 CDS 边界),
-  # 不能走通用路径喂原始序列(会被 silent 误切)。待写专用 adapter 后再启用:
-  # $PY $TRAIN "${base[@]}" --model-dir "$M_MRNABERT" --max-tokens 3000 --output-dir "$O/mrnabert"
 }
 
 # ---------------------------------------------------------------------------
