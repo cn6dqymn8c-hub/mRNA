@@ -73,6 +73,11 @@ isoform 判别结论**必须先扣长度**(§5)。
 - **定位专用架构**(`--arch rnatracker|dm3loc`)从零训练于 one-hot，用与基础模型**完全相同**的
   split/标签/masked-BCE/评估，作"FM vs 专用 vs k-mer"对照。长度由 `--ts-max-len` 控制。
   注：是 RNATracker/DM3Loc 的**紧凑复现**(非原版权重)，作受控基线。
+- **`--features` 特征堆叠**(可选,默认不启用,对其它实验零影响):把多组特征拼成一个矩阵喂 head,
+  如 `--features fm engineered`。块:`fm`(嵌入)/`kmer`/`engineered`(长度+GC+二核苷酸+定位 motif)/
+  `length`(仅长度=**混淆基线**)/`structure`(MFE,需 ViennaRNA)。**冲效果时只在最优配置上加一两个增强 run**;
+  含长度的块会涨分但部分来自长度混淆,务必同时跑 `--features length` 量化其贡献。
+  公平性:若做对比,要么 engineered 单独成列、要么对所有模型同等加,别只偏加给一个。
 - **mRNA-FM 仅 cds，不进 full**：codon tokenizer 需阅读框；`apply_region` 提取的 CDS 起点是起始密码子
   (in-frame)，token=真实密码子。而 full 含任意长 5'UTR，从位置 0 切三联体会**与真实帧错位**、且 UTR 无
   密码子结构，codon 解释不干净。故 Track 3(full)不含 mRNA-FM；只有 nt/BPE 模型(RNA-FM/DNABERT-2)与

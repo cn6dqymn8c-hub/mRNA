@@ -82,10 +82,30 @@ def main():
     seqs = df["sequence"].tolist()
 
     # Featurize exactly as the artifact was trained.
-    if cfg.get("baseline") == "kmer":
-        X = T.kmer_features(seqs, int(cfg.get("kmer_k", 4)))
-    elif cfg.get("arch", "fm") in ("rnatracker", "dm3loc") or cfg.get("finetune"):
+    def _fm_block(seqs_):
+        model_dir = args.model_dir or cfg.get("model_dir")
+        device = args.device or cfg.get("device", "cpu")
+        import torch
+        if str(device).startswith("cuda") and not torch.cuda.is_available():
+            device = "cpu"
+        tok, model = T.load_model(model_dir, device)
+        return T.embed_sequences(seqs_, tok, model, device,
+                                 max_tokens=int(cfg.get("max_tokens", 1024)),
+                                 batch_size=int(cfg.get("batch_size", 8)),
+                                 pool=cfg.get("pool", "mean"),
+                                 window_pool=cfg.get("window_pool", "mean"))
+
+    if cfg.get("arch", "fm") in ("rnatracker", "dm3loc") or cfg.get("finetune"):
         raise SystemExit("[error] this artifact is --arch/--finetune; not supported by predict.py.")
+    elif cfg.get("features"):
+        from engineered_features import build_feature_block
+        blocks = []
+        for fblk in cfg["features"]:
+            blocks.append(_fm_block(seqs) if fblk == "fm"
+                          else build_feature_block(fblk, seqs, kmer_k=int(cfg.get("kmer_k", 4)))[0])
+        X = np.concatenate([b.astype(np.float32) for b in blocks], axis=1)
+    elif cfg.get("baseline") == "kmer":
+        X = T.kmer_features(seqs, int(cfg.get("kmer_k", 4)))
     else:
         model_dir = args.model_dir or cfg.get("model_dir")
         device = args.device or cfg.get("device", "cpu")

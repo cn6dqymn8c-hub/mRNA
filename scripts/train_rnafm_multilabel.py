@@ -1513,6 +1513,13 @@ def main():
     ap.add_argument("--classifier", choices=["logistic", "mlp"], default="logistic")
     ap.add_argument("--baseline", choices=["none", "kmer"], default="none")
     ap.add_argument("--kmer-k", type=int, default=4)
+    ap.add_argument("--features", nargs="*", default=None,
+                    choices=["fm", "kmer", "engineered", "length", "structure"],
+                    help="STACK feature families into one matrix for the logistic/mlp "
+                    "head, e.g. --features fm engineered. Overrides the single-source "
+                    "path; not usable with --arch/--finetune. 'length'/'engineered' "
+                    "include the 3'UTR-length CONFOUND (also run --features length as a "
+                    "baseline to quantify it); 'structure' needs ViennaRNA.")
     # ---- feature family selector --------------------------------------------
     ap.add_argument("--arch", choices=["fm", "rnatracker", "dm3loc"], default="fm",
                     help="fm = foundation-model embeddings/finetune (default); "
@@ -1650,12 +1657,36 @@ def main():
     print("[conflict]", audit)
     pd.DataFrame([audit]).to_csv(args.output_dir / "conflict_audit.csv", index=False)
 
+    if args.features and (is_task_specific or args.finetune):
+        raise SystemExit("[error] --features (stacked head) is not usable with --arch / --finetune.")
+
     if is_task_specific:
         feat_tag = args.arch
         emb_full = None
     elif args.finetune:
         feat_tag = os.path.basename(os.path.normpath(args.model_dir))
         emb_full = None
+    elif args.features:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from engineered_features import build_feature_block
+        seqs_all = genes["sequence"].tolist()
+        blocks, tags = [], []
+        for fblk in args.features:
+            if fblk == "fm":
+                model_tag = os.path.basename(os.path.normpath(args.model_dir))
+                emb_sig = (f"{model_tag}_{args.sample_level}_{args.region}_"
+                           f"{args.pool}_{args.window_pool}_{args.max_tokens}")
+                args.emb_cache_dir.mkdir(parents=True, exist_ok=True)
+                blocks.append(get_embeddings(genes, args, args.emb_cache_dir / f"emb_{emb_sig}.npy"))
+                tags.append(model_tag)
+            else:
+                X, tag = build_feature_block(fblk, seqs_all, kmer_k=args.kmer_k)
+                blocks.append(X.astype(np.float32))
+                tags.append(tag)
+        emb_full = np.concatenate(blocks, axis=1).astype(np.float32)
+        feat_tag = "+".join(tags)
+        print(f"[features] stacked {tags} -> {emb_full.shape}")
     elif args.baseline == "kmer":
         feat_tag = f"kmer{args.kmer_k}_{args.region}"
         print(f"[baseline] computing {args.kmer_k}-mer features for {len(genes)} sequences ...")
