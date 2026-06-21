@@ -112,6 +112,9 @@ isoform-level 是 gene-level 的**超集**(行更多、阳性更多)，不是更
 - **Track 2/3 只 gene**；**Track 3 不含 mRNA-FM/UTR-BERT**(codon 无阅读框、UTR-BERT 专 3'UTR)。
 - **fine = 5 隔室多标签**(Cell_body/Dendrite/Neuropil/Axon/Neurite)，必须 `--label-scheme fine --source-mask`，
   作为二分类头条的补充视角。
+- **`--keep-assay-labels`**:额外把 **Ribosome/Cytoplasm** 纳入 fine 目标类。它们是**翻译/分馏轴**(非解剖
+  定位轴)——Ribosome 序列可预测性强(实测 ROC≈0.86),Cytoplasm 弱(ROC≈0.58)。走 source-mask(只有做过
+  该 assay 的源贡献负样本)。**单独成节报告**,不要混进定位隔室的 macro,以免糊掉两条不同的生物学轴。
 - **full vs 3'UTR 结论**：Track 3 vs Track 1(趋势) + 消融在同基因交集严格比(claim)。两走向都可发表。
 
 ---

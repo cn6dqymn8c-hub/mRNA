@@ -33,6 +33,10 @@ import pandas as pd
 # Label harmonization
 # ----------------------------------------------------------------------------
 ASSAY_LABELS = {"Ribosome", "Cytoplasm"}
+# Deterministic order when assay labels are promoted to target classes
+# (--keep-assay-labels). These are a translation/fractionation axis, distinct
+# from the anatomical compartments; report them separately.
+ASSAY_LABEL_ORDER = ["Ribosome", "Cytoplasm"]
 
 LABEL_ALIASES = {
     "cell_body": "Cell_body",
@@ -403,6 +407,7 @@ def apply_label_scheme(
     min_sources: int = 1,
     source_label_sets: dict[str, set[str]] | None = None,
     use_source_mask: bool = False,
+    keep_assay: bool = False,
 ) -> tuple[pd.DataFrame, list[str], np.ndarray, np.ndarray]:
     df = df.copy()
     if min_sources > 1:
@@ -442,6 +447,12 @@ def apply_label_scheme(
         return df, ["is_neurite"], w, np.ones((len(df), 1), dtype=np.float32)
 
     classes_all = list(FINE_LABELS)
+    if keep_assay:
+        # Promote assay-readout labels (Ribosome/Cytoplasm) to extra target classes.
+        # Per-label source-mask keeps them honest (only sources that ran the assay
+        # contribute negatives); they live on a different (translation/fractionation)
+        # axis than the anatomical compartments and should be reported separately.
+        classes_all = classes_all + [c for c in ASSAY_LABEL_ORDER if c not in classes_all]
     n = len(df)
     target_all = np.zeros((n, len(classes_all)), dtype=np.int8)
     mask_all = np.zeros((n, len(classes_all)), dtype=np.float32)
@@ -1479,7 +1490,11 @@ def main():
                     "merged bulk+isoform file's blank-tagged bulk transcripts are not "
                     "silently used at full length under --region utr3.")
     ap.add_argument("--label-scheme", choices=["soma_vs_neurite", "fine"], default="soma_vs_neurite")
-    ap.add_argument("--keep-assay-labels", action="store_true")
+    ap.add_argument("--keep-assay-labels", action="store_true",
+                    help="also model the assay-readout labels Ribosome/Cytoplasm as "
+                    "fine target classes (a translation/fractionation axis, distinct "
+                    "from anatomical compartments). Requires --source-mask; report them "
+                    "separately from the localization compartments.")
     ap.add_argument("--species", nargs="*", default=None,
                     help="keep only these species (canonical: mouse/rat/human). "
                     "Default keeps all. e.g. --species mouse rat drops the tiny human "
@@ -1656,6 +1671,7 @@ def main():
     genes, classes, sw_all, label_mask_full = apply_label_scheme(
         genes, args.label_scheme, args.min_support, args.label_agg, args.min_label_sources,
         args.min_sources, source_label_sets=src_measured, use_source_mask=args.source_mask,
+        keep_assay=args.keep_assay_labels,
     )
     genes = genes.reset_index(drop=True)
     if len(genes) == 0:
