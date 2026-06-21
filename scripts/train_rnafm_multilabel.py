@@ -1842,6 +1842,20 @@ def main():
         args.output_dir / "label_thresholds.csv", index=False
     )
 
+    # Per-sample TEST predictions, so a group-level bootstrap can test whether
+    # model differences are significant (join two runs on species+gene_name,
+    # resample by split_group).
+    pred = pd.DataFrame({
+        "species": genes["species"].astype(str).to_numpy()[te_idx],
+        "gene_name": genes["gene_name"].astype(str).to_numpy()[te_idx],
+        "split_group": np.asarray(groups)[te_idx],
+    })
+    for j, c in enumerate(classes):
+        pred[f"y_{c}"] = Y[te_idx][:, j]
+        pred[f"mask_{c}"] = label_mask_full[te_idx][:, j].astype(int)
+        pred[f"prob_{c}"] = prob_te[:, j]
+    pred.to_csv(args.output_dir / "test_predictions.csv", index=False)
+
     sp_rows = []
     te_species = genes["species"].astype(str).to_numpy()[te_idx]
     for sp in sorted(np.unique(te_species)):
