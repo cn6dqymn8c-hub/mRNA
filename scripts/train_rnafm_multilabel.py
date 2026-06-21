@@ -1552,6 +1552,10 @@ def main():
     ap.add_argument("--split-assignments", type=Path, default=None,
                     help="reuse a frozen split (a previous run's split_assignments.csv) "
                     "so multiple models/scripts compare on the EXACT same partition.")
+    ap.add_argument("--restrict-to-split", action="store_true",
+                    help="with --split-assignments, DROP samples not present in the "
+                    "frozen split (instead of erroring). Use for the region ablation: "
+                    "run utr3/cds/full on exactly the same gene intersection.")
     ap.add_argument("--train-on-all", action="store_true",
                     help="DEPLOYMENT fit: train the head on ALL samples (no held-out "
                     "test). Reported metrics become IN-SAMPLE; use this only to build "
@@ -1720,6 +1724,25 @@ def main():
     ortholog_map = load_ortholog_map(args.ortholog_map)
     groups = build_leakage_safe_groups(genes, ortholog_map)
     genes["split_group"] = groups
+
+    if args.split_assignments is not None and args.restrict_to_split:
+        sp_keys = pd.read_csv(args.split_assignments, dtype=str)
+        keyset = {(canonical_species(s), str(g).strip().upper())
+                  for s, g in zip(sp_keys["species"], sp_keys["gene_name"])}
+        keep = np.array([(canonical_species(s), str(g).strip().upper()) in keyset
+                         for s, g in zip(genes["species"], genes["gene_name"])])
+        n0 = len(genes)
+        genes = genes.loc[keep].reset_index(drop=True)
+        Y = Y[keep]
+        label_mask_full = label_mask_full[keep]
+        sw_all = np.asarray(sw_all)[keep]
+        groups = groups[keep]
+        if emb is not None:
+            emb = emb[keep]
+        genes["split_group"] = groups
+        print(f"[restrict-to-split] kept {len(genes)}/{n0} samples present in the frozen split")
+        if len(genes) == 0:
+            raise SystemExit("[error] --restrict-to-split removed all samples (no overlap with split).")
 
     if args.split_assignments is not None:
         tr_idx, va_idx, te_idx = load_external_split(args.split_assignments, genes, groups)

@@ -135,14 +135,15 @@ track3() {
 # 消融 —— RNA-FM × {utr3,cds,full},同一批 cds 基因 + 同 split
 # ---------------------------------------------------------------------------
 ablation() {
+  # 同基因交集 = CDS 基因(cds⊆utr3⊆full)。--restrict-to-split 让 utr3/full 只保留
+  # 这批基因,三臂同基因、同 split、只变区域 → 真正可比的 3'UTR vs CDS vs full。
   local SP="$SPLIT_DIR/split_Uablate_gene.csv"
   for R in utr3 cds full; do
     local extra=(); [ "$R" != "full" ] && extra=(--gtf "${GTF[@]}")
     local nat=(); [ "$R" = "utr3" ] && nat=(--native-region-sources "${NATIVE[@]}")
     $PY $TRAIN --input-dir "$INPUT_DIR" --region "$R" --sample-level gene \
-      "${extra[@]}" "${nat[@]}" "${COMMON[@]}" --split-assignments "$SP" \
-      --model-dir "$M_RNAFM" --max-tokens 1022 --output-dir "$OUT/ablation_region/rnafm_$R" || \
-      echo "[ablation] region=$R 有基因不在 cds 交集——如需严格交集请只保留 cds 基因再跑。"
+      "${extra[@]}" "${nat[@]}" "${COMMON[@]}" --split-assignments "$SP" --restrict-to-split \
+      --model-dir "$M_RNAFM" --max-tokens 1022 --output-dir "$OUT/ablation_region/rnafm_$R"
   done
 }
 
