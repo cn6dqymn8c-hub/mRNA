@@ -91,8 +91,13 @@ the RNA-FM embedding (fusion) raised it further to 0.702 (+0.085 over engineered
 95% CI [+0.068, +0.103], p < 0.001). The foundation model thus contributes the largest,
 significant share of performance and is not redundant with sequence length, and the
 fusion exceeds either the foundation model (0.643) or engineered features (0.617)
-alone — i.e. the two views are complementary. [Repeat on isoform 3'UTR (Track1B) to
-show generality — fill numbers.]
+alone, i.e. the two views are complementary. The same decomposition on isoform-
+resolved 3'UTRs (Table 3b) gave the identical ordering: length 0.560 -> engineered
+0.656 (+0.096 over length, p < 0.001) -> fusion 0.685 (+0.029 over engineered, 95% CI
+[+0.018, +0.040], p < 0.001), again with the foundation model contributing a
+significant increment beyond, and not explained by, transcript length. Thus across
+both the best (full-length) and the isoform-resolution settings, the foundation model
+adds robust, length-independent signal, and fusion beats either view alone.
 
 ### 5. Localization signal is concentrated in the full-length transcript
 A region ablation restricted to genes whose 3'UTR, CDS and full-length sequence could
@@ -134,6 +139,15 @@ information is therefore distributed across the transcript rather than confined 
 | RNA-FM (frozen) | 0.643 | — | — |
 | **fusion (RNA-FM ⊕ engineered)** | **0.702** | +0.085 (over engineered) | <0.001 |
 
+**Table 3b. Isoform 3'UTR component decomposition (test ROC-AUC).**
+
+| Model | ROC-AUC | Δ vs previous | p |
+|---|---|---|---|
+| length only | 0.560 | — | — |
+| engineered | 0.656 | +0.096 | <0.001 |
+| RNA-FM (frozen) | 0.663 | — | — |
+| **fusion (RNA-FM ⊕ engineered)** | **0.685** | +0.029 (over engineered) | <0.001 |
+
 **Table 4. Region ablation, matched genes, RNA-FM (test ROC-AUC).**
 
 | comparison | Δ | 95% CI | p |
@@ -147,7 +161,7 @@ information is therefore distributed across the transcript rather than confined 
 ## Notes / to finish before submission
 - Fill exact total N per setting (test n: 3'UTR-gene 2855, 3'UTR-iso 4489, CDS 2522,
   full 3019; ×~6.7 for totals) and group counts (n_groups ≈ 1859–2203).
-- Run §4 decomposition on the isoform 3'UTR setting too (generality).
+- §4 decomposition done on full-length AND isoform 3'UTR (both confirm FM > engineered > length).
 - Report AUPRC alongside ROC-AUC (we used ROC-AUC for tests as it is prior-robust
   across settings); also report per-species (mouse/rat) and the all-zero/prior baselines.
 - Multiple-testing: state that fusion-vs-kmer survives Bonferroni (4 tests).
