@@ -1190,6 +1190,24 @@ def finetune_model(
     va_prob = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
     te_prob = 1.0 / (1.0 + np.exp(-run(te_idx, False)))
     print(f"[finetune] best val_macro_auc={best_auc:.4f}")
+    if getattr(args, "save_finetune_checkpoint", False):
+        ckpt_path = args.output_dir / "finetuned_model.pt"
+        torch.save(
+            {
+                "model_dir": str(args.model_dir),
+                "base_state_dict": {k: v.detach().cpu() for k, v in base.state_dict().items()},
+                "head_state_dict": {k: v.detach().cpu() for k, v in head.state_dict().items()},
+                "classes": list(classes),
+                "region": args.region,
+                "sample_level": args.sample_level,
+                "pool": args.pool,
+                "ft_max_len": int(max_tok),
+                "ft_long_seq_policy": policy,
+                "best_val_macro_auc": float(best_auc),
+            },
+            ckpt_path,
+        )
+        print(f"[finetune] saved checkpoint -> {ckpt_path}")
     return va_prob, te_prob
 
 
@@ -1562,6 +1580,10 @@ def main():
                     "test). Reported metrics become IN-SAMPLE; use this only to build "
                     "the final shipped artifact after selecting the config on a frozen "
                     "split. The honest test number must come from the benchmark run.")
+    ap.add_argument("--save-finetune-checkpoint", action="store_true",
+                    help="with --finetune, save encoder + linear-head weights to "
+                    "finetuned_model.pt. Use mainly for the final selected deployment "
+                    "run; benchmark sweeps can leave it off to save disk.")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
