@@ -197,9 +197,26 @@ fusion() {
     "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track3_full/fusion"
 }
 
+# ---------------------------------------------------------------------------
+# deploy —— 最终部署模型:全长 fusion(基准里最优,ROC-AUC 0.70),用 --train-on-all
+#   在【全部样本】上重拟合(无 held-out;报告指标用 benchmark 的 fusion 那次,不是这次的
+#   in-sample 数)。产出 fusion_model.joblib + run_config.json + label_thresholds.csv,
+#   之后用 scripts/predict.py 对新序列打分。
+# ---------------------------------------------------------------------------
+deploy() {
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level gene \
+    "${COMMON[@]}" --arch fusion --features fm engineered --model-dir "$M_RNAFM" \
+    --max-tokens 1022 --train-on-all --output-dir "$OUT/final_deploy_full_fusion"
+  echo "部署模型已保存到 $OUT/final_deploy_full_fusion"
+  echo "打分新序列:"
+  echo "  $PY scripts/predict.py --artifact-dir $OUT/final_deploy_full_fusion \\"
+  echo "       --input new_transcripts.csv --output predictions.csv"
+}
+
 case "${1:-all}" in
   splits)   make_splits ;;
   fusion)   fusion ;;
+  deploy)   deploy ;;
   track1a)  track1a ;;
   track1b)  track1b ;;
   track2)   track2 ;;
@@ -207,7 +224,7 @@ case "${1:-all}" in
   ablation) ablation ;;
   fine)     fine ;;
   all)      make_splits; track1a; track1b; track2; track3; ablation; fine ;;
-  *) echo "usage: $0 [splits|track1a|track1b|track2|track3|ablation|fine|all]"; exit 1 ;;
+  *) echo "usage: $0 [splits|track1a|track1b|track2|track3|ablation|fine|deploy|all]"; exit 1 ;;
 esac
 
 echo "DONE. 合并主表:  find $OUT -name overall_metrics.csv"

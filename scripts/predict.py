@@ -8,9 +8,10 @@ Loads a train-on-all artifact directory produced by
 run_config.json) and scores an input CSV of transcripts, reproducing the exact
 preprocessing (region routing, k-mer or frozen-FM features) from run_config.json.
 
-Only the frozen-feature + logistic/mlp head artifacts are supported here (the ones
-that write classifier.joblib). --arch nets and --finetune do not save a joblib head
-and are not the intended deployment path.
+Supported artifacts: frozen-feature + logistic/mlp head (classifier.joblib) and the
+proposed fusion model (--arch fusion, which writes fusion_model.joblib). --arch nets
+(rnatracker/dm3loc) and --finetune do not save a deployable head and are not the
+intended deployment path.
 
 Usage:
     python scripts/predict.py --artifact-dir results/final_best \
@@ -52,14 +53,18 @@ def main():
     thr = pd.read_csv(args.artifact_dir / "label_thresholds.csv")
     thresholds = thr.set_index("label")["threshold"].reindex(classes).to_numpy()
 
-    bundle_path = args.artifact_dir / "classifier.joblib"
-    if not bundle_path.exists():
-        raise SystemExit(
-            f"[error] {bundle_path} not found. predict.py supports frozen-feature + "
-            "logistic/mlp artifacts only (not --arch / --finetune)."
-        )
-    bundle = joblib.load(bundle_path)
-    scaler, models = bundle["scaler"], bundle["models"]
+    is_fusion = cfg.get("arch") == "fusion"
+    if is_fusion:
+        scaler = models = None  # fusion has its own artifact + scoring path
+    else:
+        bundle_path = args.artifact_dir / "classifier.joblib"
+        if not bundle_path.exists():
+            raise SystemExit(
+                f"[error] {bundle_path} not found. predict.py supports frozen-feature + "
+                "logistic/mlp + fusion artifacts only (not --arch nets / --finetune)."
+            )
+        bundle = joblib.load(bundle_path)
+        scaler, models = bundle["scaler"], bundle["models"]
 
     region = cfg.get("region", "full")
     df = pd.read_csv(args.input, low_memory=False)
@@ -96,30 +101,42 @@ def main():
                                  window_pool=cfg.get("window_pool", "mean"))
 
     if cfg.get("arch", "fm") in ("rnatracker", "dm3loc") or cfg.get("finetune"):
-        raise SystemExit("[error] this artifact is --arch/--finetune; not supported by predict.py.")
-    elif cfg.get("features"):
+        raise SystemExit("[error] this artifact is --arch nets/--finetune; not supported by predict.py.")
+    elif is_fusion:
+        # Rebuild the SAME ordered feature views fusion was trained on, kept as a
+        # list (not concatenated); per-view scaling + the fused net live in the artifact.
         from engineered_features import build_feature_block
+        from fusion_model import score_fusion
         blocks = []
         for fblk in cfg["features"]:
             blocks.append(_fm_block(seqs) if fblk == "fm"
                           else build_feature_block(fblk, seqs, kmer_k=int(cfg.get("kmer_k", 4)))[0])
-        X = np.concatenate([b.astype(np.float32) for b in blocks], axis=1)
-    elif cfg.get("baseline") == "kmer":
-        X = T.kmer_features(seqs, int(cfg.get("kmer_k", 4)))
-    else:
-        model_dir = args.model_dir or cfg.get("model_dir")
+        blocks = [b.astype(np.float32) for b in blocks]
         device = args.device or cfg.get("device", "cpu")
-        import torch
-        if str(device).startswith("cuda") and not torch.cuda.is_available():
-            device = "cpu"
-        tok, model = T.load_model(model_dir, device)
-        X = T.embed_sequences(seqs, tok, model, device,
-                              max_tokens=int(cfg.get("max_tokens", 1024)),
-                              batch_size=int(cfg.get("batch_size", 8)),
-                              pool=cfg.get("pool", "mean"),
-                              window_pool=cfg.get("window_pool", "mean"))
-
-    prob = T.predict_head(scaler, models, X, len(classes))
+        prob = score_fusion(args.artifact_dir, blocks, device=device)
+    else:
+        if cfg.get("features"):
+            from engineered_features import build_feature_block
+            blocks = []
+            for fblk in cfg["features"]:
+                blocks.append(_fm_block(seqs) if fblk == "fm"
+                              else build_feature_block(fblk, seqs, kmer_k=int(cfg.get("kmer_k", 4)))[0])
+            X = np.concatenate([b.astype(np.float32) for b in blocks], axis=1)
+        elif cfg.get("baseline") == "kmer":
+            X = T.kmer_features(seqs, int(cfg.get("kmer_k", 4)))
+        else:
+            model_dir = args.model_dir or cfg.get("model_dir")
+            device = args.device or cfg.get("device", "cpu")
+            import torch
+            if str(device).startswith("cuda") and not torch.cuda.is_available():
+                device = "cpu"
+            tok, model = T.load_model(model_dir, device)
+            X = T.embed_sequences(seqs, tok, model, device,
+                                  max_tokens=int(cfg.get("max_tokens", 1024)),
+                                  batch_size=int(cfg.get("batch_size", 8)),
+                                  pool=cfg.get("pool", "mean"),
+                                  window_pool=cfg.get("window_pool", "mean"))
+        prob = T.predict_head(scaler, models, X, len(classes))
     pred = (prob >= np.asarray(thresholds, dtype=float).reshape(1, -1)).astype(int)
 
     out = df.drop(columns=["sequence"]).reset_index(drop=True)

@@ -22,6 +22,8 @@ where `blocks` is a list of (N, d_i) feature matrices aligned to the gene rows.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 
@@ -104,7 +106,8 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
         return xs, ys, ws, ms, owners
 
     torch.manual_seed(int(getattr(args, "seed", 0)))
-    model = _build_fusion(block_dims, nC).to(device)
+    hidden, dropout = 128, 0.3
+    model = _build_fusion(block_dims, nC, hidden=hidden, dropout=dropout).to(device)
 
     known = label_mask[tr_idx].sum(axis=0)
     pos = (Y[tr_idx] * label_mask[tr_idx]).sum(axis=0)
@@ -169,4 +172,53 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
     va_prob = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
     te_prob = 1.0 / (1.0 + np.exp(-run(te_idx, False)))
     print(f"[fusion] best val_macro_auc={best_auc:.4f}")
+
+    # Persist a deployable artifact so predict.py can score new sequences with the
+    # SAME fused architecture, per-view standardization and class order.
+    out_dir = getattr(args, "output_dir", None)
+    if out_dir is not None:
+        import joblib
+        joblib.dump(
+            {
+                "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                "block_dims": block_dims,
+                "hidden": hidden,
+                "dropout": dropout,
+                "n_classes": nC,
+                "classes": list(classes),
+                "scalers": scalers,
+                "features": list(getattr(args, "features", []) or []),
+            },
+            os.path.join(str(out_dir), "fusion_model.joblib"),
+        )
+        print(f"[fusion] saved deployable artifact -> {out_dir}/fusion_model.joblib")
     return va_prob, te_prob
+
+
+def score_fusion(artifact_dir, blocks, device="cpu"):
+    """Score new sequences with a saved fusion artifact.
+
+    `blocks` is a list of (N, d_i) raw feature matrices in the SAME order as the
+    training `--features` views; per-view scalers and the fused net are reloaded
+    from `fusion_model.joblib`. Returns an (N, n_classes) probability array.
+    """
+    import joblib
+    import torch
+
+    bundle = joblib.load(os.path.join(str(artifact_dir), "fusion_model.joblib"))
+    if len(blocks) != len(bundle["block_dims"]):
+        raise SystemExit(
+            f"[error] fusion expects {len(bundle['block_dims'])} feature views "
+            f"({bundle['features']}) but got {len(blocks)}."
+        )
+    if str(device).startswith("cuda") and not torch.cuda.is_available():
+        device = "cpu"
+    blocks_s = [sc.transform(b).astype(np.float32) for sc, b in zip(bundle["scalers"], blocks)]
+    model = _build_fusion(bundle["block_dims"], bundle["n_classes"],
+                          hidden=bundle["hidden"], dropout=bundle["dropout"])
+    model.load_state_dict(bundle["state_dict"])
+    model.to(device).eval()
+    xs = [torch.tensor(b, device=device) for b in blocks_s]
+    with torch.no_grad():
+        logits = model(xs).cpu().numpy()
+    return 1.0 / (1.0 + np.exp(-logits))
