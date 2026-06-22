@@ -79,8 +79,8 @@ track1a() {
               --gtf "${GTF[@]}" --native-region-sources "${NATIVE[@]}"
               "${COMMON[@]}" --split-assignments "$SP")
   $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
-  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 2000      --output-dir "$O/rnatracker"
-  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 2000      --output-dir "$O/dm3loc"
+  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 31000     --output-dir "$O/rnatracker"
+  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 31000     --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_UTRBERT" --max-tokens 510  --output-dir "$O/utrbert"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O/dnabert2"
@@ -95,8 +95,8 @@ track1b() {
               --gtf "${GTF[@]}" --native-region-sources "${NATIVE[@]}"
               "${COMMON[@]}" --split-assignments "$SP")
   $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
-  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 2000      --output-dir "$O/rnatracker"
-  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 2000      --output-dir "$O/dm3loc"
+  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 31000     --output-dir "$O/rnatracker"
+  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 31000     --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_UTRBERT" --max-tokens 510  --output-dir "$O/utrbert"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O/dnabert2"
@@ -110,8 +110,8 @@ track2() {
   local base=(--input-dir "$INPUT_DIR" --region cds --sample-level gene
               --gtf "${GTF[@]}" "${COMMON[@]}" --split-assignments "$SP")
   $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
-  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 4000      --output-dir "$O/rnatracker"
-  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 4000      --output-dir "$O/dm3loc"
+  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 31000     --output-dir "$O/rnatracker"
+  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 31000     --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"  --max-tokens 1022 --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_MRNAFM" --max-tokens 1024 --output-dir "$O/mrnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
@@ -159,7 +159,7 @@ fine() {
   local b1=(--input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}"
             --native-region-sources "${NATIVE[@]}" "${C[@]}" --split-assignments "$SP1")
   $PY $TRAIN "${b1[@]}" --baseline kmer --kmer-k 4               --output-dir "$O1/kmer"
-  $PY $TRAIN "${b1[@]}" --arch dm3loc --ts-max-len 2000          --output-dir "$O1/dm3loc"
+  $PY $TRAIN "${b1[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O1/dm3loc"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O1/rnafm"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O1/dnabert2"
   # 全长 fine(bulk,gene)
