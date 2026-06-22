@@ -53,7 +53,9 @@ def main():
     thr = pd.read_csv(args.artifact_dir / "label_thresholds.csv")
     thresholds = thr.set_index("label")["threshold"].reindex(classes).to_numpy()
 
-    is_fusion = cfg.get("arch") == "fusion"
+    # Fusion is triggered either by --arch fusion or by the --fusion flag (arch
+    # stays "fm" with --features). Detect both so predict.py works across versions.
+    is_fusion = bool(cfg.get("fusion")) or cfg.get("arch") == "fusion"
     if is_fusion:
         scaler = models = None  # fusion has its own artifact + scoring path
     else:
