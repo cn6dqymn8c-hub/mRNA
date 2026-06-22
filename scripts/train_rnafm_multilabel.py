@@ -1547,7 +1547,11 @@ def main():
     ap.add_argument("--ts-max-len", type=int, default=4000, help="one-hot length for --arch nets")
     ap.add_argument("--ts-epochs", type=int, default=30)
     ap.add_argument("--ts-patience", type=int, default=5)
-    ap.add_argument("--ts-batch", type=int, default=32)
+    ap.add_argument("--ts-batch", type=int, default=32,
+                    help="max batch size for --arch nets (length-bucketed)")
+    ap.add_argument("--ts-token-budget", type=int, default=60000,
+                    help="per-batch token budget (batch_size*padded_len) for --arch nets; "
+                         "lower it if OOM on long full-length sequences")
     ap.add_argument("--ts-lr", type=float, default=1e-3)
     # ---- foundation-model fine-tune -----------------------------------------
     ap.add_argument("--finetune", action="store_true")

@@ -125,8 +125,8 @@ track3() {
   local base=(--input-dir "$INPUT_DIR" --region full --sample-level gene
               "${COMMON[@]}" --split-assignments "$SP")
   $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
-  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 6000      --output-dir "$O/rnatracker"
-  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 6000      --output-dir "$O/dm3loc"
+  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 31000     --output-dir "$O/rnatracker"
+  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 31000     --output-dir "$O/dm3loc"
   $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --window-pool mean --output-dir "$O/rnafm"
   $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
 }
@@ -167,7 +167,7 @@ fine() {
   local b3=(--input-dir "$INPUT_DIR" --region full --sample-level gene
             "${C[@]}" --split-assignments "$SP3")
   $PY $TRAIN "${b3[@]}" --baseline kmer --kmer-k 4               --output-dir "$O3/kmer"
-  $PY $TRAIN "${b3[@]}" --arch dm3loc --ts-max-len 6000          --output-dir "$O3/dm3loc"
+  $PY $TRAIN "${b3[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O3/dm3loc"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O3/rnafm"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O3/dnabert2"
 }

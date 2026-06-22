@@ -29,10 +29,12 @@ _BASE2IDX = {"A": 0, "C": 1, "G": 2, "U": 3, "T": 3}
 
 
 def _one_hot(seq: str, max_len: int) -> np.ndarray:
-    """(4, max_len) one-hot. Sequence is taken 5'->3' and padded/truncated to
-    max_len. N / unknown -> all-zero column."""
-    x = np.zeros((4, max_len), dtype=np.float32)
+    """(4, L) one-hot at the sequence's OWN length (capped at max_len; taken
+    5'->3'). N / unknown -> all-zero column. No padding here — batches are padded
+    dynamically to the batch max so short sequences don't pay for long ones."""
     s = str(seq)[:max_len]
+    L = max(len(s), 1)
+    x = np.zeros((4, L), dtype=np.float32)
     for i, ch in enumerate(s):
         j = _BASE2IDX.get(ch)
         if j is not None:
@@ -40,8 +42,32 @@ def _one_hot(seq: str, max_len: int) -> np.ndarray:
     return x
 
 
+def _rnatracker_out_len(L):
+    """Valid feature length after RNATracker conv stack, given valid input len L.
+    conv(pad5,k10): +1 ; maxpool(3) ; conv(pad5,k10): +1 ; maxpool(3)."""
+    L = L + 1
+    L = (L - 3) // 3 + 1
+    L = L + 1
+    L = (L - 3) // 3 + 1
+    return L.clamp(min=1)
+
+
+def _dm3loc_out_len(L):
+    """Valid feature length after DM3Loc embed stack: conv(pad3,k7) keeps L,
+    then maxpool(4)."""
+    L = (L - 4) // 4 + 1
+    return L.clamp(min=1)
+
+
+
 def _build_models(arch, n_classes, max_len):
+    import torch
     import torch.nn as nn
+
+    def _len_mask(lengths, T):
+        # (B, T) bool, True = valid (non-pad), from valid lengths clamped to T.
+        ar = torch.arange(T, device=lengths.device).unsqueeze(0)
+        return ar < lengths.clamp(max=T).unsqueeze(1)
 
     class AttnPool(nn.Module):
         """Additive attention pooling over the length axis. Input (B, T, H)."""
@@ -68,10 +94,11 @@ def _build_models(arch, n_classes, max_len):
             self.head = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Dropout(0.3),
                                       nn.Linear(64, n_classes))
 
-        def forward(self, x):                 # x: (B, 4, L)
+        def forward(self, x, lengths):        # x: (B, 4, L)
             h = self.conv(x).transpose(1, 2)  # (B, L', 32)
             h, _ = self.lstm(h)               # (B, L', 64)
-            return self.head(self.pool(h))
+            mask = _len_mask(_rnatracker_out_len(lengths), h.shape[1])
+            return self.head(self.pool(h, mask))
 
     class DM3Loc(nn.Module):
         def __init__(self):
@@ -86,11 +113,12 @@ def _build_models(arch, n_classes, max_len):
             self.head = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Dropout(0.3),
                                       nn.Linear(64, n_classes))
 
-        def forward(self, x):                 # x: (B, 4, L)
+        def forward(self, x, lengths):        # x: (B, 4, L)
             h = self.embed(x).transpose(1, 2)  # (B, L'', 64)
-            a, _ = self.attn(h, h, h)
+            mask = _len_mask(_dm3loc_out_len(lengths), h.shape[1])
+            a, _ = self.attn(h, h, h, key_padding_mask=~mask, need_weights=False)
             h = self.norm(h + a)
-            return self.head(self.pool(h))
+            return self.head(self.pool(h, mask))
 
     return RNATracker() if arch == "rnatracker" else DM3Loc()
 
@@ -102,7 +130,6 @@ def train_task_specific(
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
-    from torch.utils.data import DataLoader, Dataset
     from sklearn.metrics import roc_auc_score
 
     device = args.device if torch.cuda.is_available() or not str(args.device).startswith("cuda") else "cpu"
@@ -122,29 +149,48 @@ def train_task_specific(
         if sample_weight.ndim == 1:
             sample_weight = np.repeat(sample_weight[:, None], nC, axis=1)
 
-    over = sum(1 for j in np.concatenate([tr_idx, va_idx, te_idx]) if len(str(seqs[j])) > max_len)
+    lengths_all = np.array([min(len(str(s)), max_len) for s in seqs], dtype=np.int64)
+    over = int((np.array([len(str(seqs[j])) for j in np.concatenate([tr_idx, va_idx, te_idx])]) > max_len).sum())
     if over:
         print(f"[{arch}][WARN] {over} sequences exceed --ts-max-len={max_len} and are "
-              "truncated (5'->3'). Raise --ts-max-len for full-length runs.", flush=True)
+              "truncated (5'->3'). Raise --ts-max-len for full coverage.", flush=True)
 
-    class DS(Dataset):
-        def __init__(self, idx):
-            self.idx = list(idx)
+    # Length-bucketed batching: sort by length, fill batches under a token budget
+    # (so short sequences batch large and only the longest run at batch=1) and pad
+    # each batch only to ITS longest sequence. Massive speedup over global padding,
+    # identical coverage (no extra truncation).
+    cap = int(getattr(args, "ts_batch", 32))
+    token_budget = int(getattr(args, "ts_token_budget", 60000))
+    rng = np.random.default_rng(int(getattr(args, "seed", 0)))
 
-        def __len__(self):
-            return len(self.idx)
+    def make_batches(idx, shuffle):
+        order = sorted((int(j) for j in idx), key=lambda j: int(lengths_all[j]))
+        batches, cur, curmax = [], [], 0
+        for j in order:
+            L = int(lengths_all[j])
+            nm = max(curmax, L)
+            if cur and ((len(cur) + 1) * nm > token_budget or len(cur) >= cap):
+                batches.append(cur)
+                cur, curmax = [], 0
+            cur.append(j)
+            curmax = max(curmax, L)
+        if cur:
+            batches.append(cur)
+        if shuffle:
+            rng.shuffle(batches)
+        return batches
 
-        def __getitem__(self, i):
-            j = self.idx[i]
-            return _one_hot(seqs[j], max_len), Y[j], sample_weight[j], label_mask[j], j
-
-    def collate(b):
-        xs = torch.tensor(np.stack([x[0] for x in b]))
-        ys = torch.tensor(np.stack([x[1] for x in b]))
-        ws = torch.tensor(np.stack([x[2] for x in b]))
-        ms = torch.tensor(np.stack([x[3] for x in b]))
-        owners = [x[4] for x in b]
-        return xs, ys, ws, ms, owners
+    def build_batch(jlist):
+        mats = [_one_hot(seqs[j], max_len) for j in jlist]
+        lens = np.array([m.shape[1] for m in mats], dtype=np.int64)
+        Lmax = int(lens.max())
+        xs = np.zeros((len(jlist), 4, Lmax), dtype=np.float32)
+        for i, m in enumerate(mats):
+            xs[i, :, : m.shape[1]] = m
+        return (torch.tensor(xs), torch.tensor(lens),
+                torch.tensor(np.stack([Y[j] for j in jlist])),
+                torch.tensor(np.stack([sample_weight[j] for j in jlist])),
+                torch.tensor(np.stack([label_mask[j] for j in jlist])), jlist)
 
     torch.manual_seed(int(getattr(args, "seed", 0)))
     model = _build_models(arch, nC, max_len).to(device)
@@ -157,17 +203,17 @@ def train_task_specific(
 
     opt = torch.optim.AdamW(model.parameters(), lr=float(getattr(args, "ts_lr", 1e-3)),
                             weight_decay=1e-4)
-    batch = int(getattr(args, "ts_batch", 32))
-
     def run(idx, train):
-        dl = DataLoader(DS(idx), batch_size=batch, shuffle=train, collate_fn=collate)
+        batches = make_batches(idx, shuffle=train)
         model.train(train)
         pos_of = {int(j): p for p, j in enumerate(idx)}
         out = np.zeros((len(idx), nC), dtype=np.float32)
-        for xs, ys, ws, ms, owners in dl:
-            xs, ys, ws, ms = xs.to(device), ys.to(device), ws.to(device), ms.to(device)
+        for jlist in batches:
+            xs, lengths, ys, ws, ms, owners = build_batch(jlist)
+            xs, lengths = xs.to(device), lengths.to(device)
+            ys, ws, ms = ys.to(device), ws.to(device), ms.to(device)
             with torch.set_grad_enabled(train):
-                logits = model(xs)
+                logits = model(xs, lengths)
                 raw = F.binary_cross_entropy_with_logits(logits, ys, pos_weight=pos_weight,
                                                           reduction="none")
                 eff = ms * ws
