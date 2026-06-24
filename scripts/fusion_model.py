@@ -173,9 +173,30 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
     te_prob = 1.0 / (1.0 + np.exp(-run(te_idx, False)))
     print(f"[fusion] best val_macro_auc={best_auc:.4f}")
 
+    out_dir = getattr(args, "output_dir", None)
+
+    # Per-test-sample gate weights (softmax over views) for interpretability:
+    # how much the model relied on each view (e.g. foundation model vs engineered)
+    # for each transcript. Saved in te_idx order so it aligns by position with
+    # test_predictions.csv.
+    view_tags = list(getattr(args, "features", []) or [f"view{i}" for i in range(len(blocks_s))])
+    te_list = list(te_idx)
+    gate_w = np.zeros((len(te_list), len(blocks_s)), dtype=np.float32)
+    model.eval()
+    with torch.no_grad():
+        for b in range(0, len(te_list), batch):
+            js = te_list[b:b + batch]
+            xs = [torch.tensor(np.stack([bl[j] for j in js])).to(device) for bl in blocks_s]
+            _, w = model(xs, return_gate=True)
+            gate_w[b:b + len(js)] = w.detach().cpu().numpy()
+    if out_dir is not None:
+        import pandas as pd
+        pd.DataFrame({f"w_{t}": gate_w[:, i] for i, t in enumerate(view_tags)}).to_csv(
+            os.path.join(str(out_dir), "gate_weights.csv"), index=False)
+        print(f"[fusion] saved per-test gate weights -> {out_dir}/gate_weights.csv")
+
     # Persist a deployable artifact so predict.py can score new sequences with the
     # SAME fused architecture, per-view standardization and class order.
-    out_dir = getattr(args, "output_dir", None)
     if out_dir is not None:
         import joblib
         joblib.dump(
