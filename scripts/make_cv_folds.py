@@ -38,11 +38,17 @@ def main():
     args = ap.parse_args()
 
     df = pd.read_csv(args.from_split, dtype={"species": str, "gene_name": str})
-    need = {"species", "gene_name", "split_group"}
-    if not need.issubset(df.columns):
-        raise SystemExit(f"[error] {args.from_split} needs columns {need}; found {df.columns.tolist()}")
-
-    groups = df["split_group"].astype(str).to_numpy()
+    if not {"species", "gene_name"}.issubset(df.columns):
+        raise SystemExit(f"[error] {args.from_split} needs species, gene_name; found {df.columns.tolist()}")
+    if "split_group" in df.columns:
+        groups = df["split_group"].astype(str).to_numpy()
+    else:
+        # Fallback: group by gene (species|GENE). Leakage-safe at the gene level
+        # but WITHOUT ortholog / exact-sequence merging — slightly less strict.
+        print("[cv][warn] no 'split_group' column; falling back to gene-level grouping "
+              "(species|gene). For full leakage-safety supply a split with split_group.")
+        groups = (df["species"].astype(str).str.lower().str.strip() + "|"
+                  + df["gene_name"].astype(str).str.upper().str.strip()).to_numpy()
     uniq = np.array(sorted(set(groups)))
     rng = np.random.default_rng(args.seed)
     rng.shuffle(uniq)

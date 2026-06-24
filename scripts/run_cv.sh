@@ -43,15 +43,23 @@ NETS_EP=(--ts-epochs 50)
 # setting -> sample-level ; scheme picked by name
 level_of() { case "$1" in *isoform*) echo isoform_sequence_union;; *) echo gene;; esac; }
 sched_of() { case "$1" in fine_*) echo fine;; *) echo bin;; esac; }
-# source split_assignments to derive folds from (the setting's kmer run)
-src_split() { echo "results/$1/kmer/split_assignments.csv"; }
+# source split to derive folds from: use the frozen split file for each setting's
+# universe (must contain species, gene_name [+ split_group for full leakage-safety]).
+src_split() {
+  case "$1" in
+    track3_full)         echo "$SP/split_U3_gene.csv" ;;
+    track3_full_isoform) echo "$SP/split_U3_gene.csv" ;;
+    fine_full_gene)      echo "$SP/split_fine_full_gene.csv" ;;
+    fine_full_isoform)   echo "$SP/split_fine_full_isoform.csv" ;;
+  esac
+}
 
 SETTINGS=(track3_full track3_full_isoform fine_full_gene fine_full_isoform)
 
 gen_folds() {
   for s in "${SETTINGS[@]}"; do
     local src; src=$(src_split "$s")
-    [ -f "$src" ] || { echo "[skip] missing $src (run the single-split kmer for $s first)"; continue; }
+    [ -f "$src" ] || { echo "[skip] missing frozen split $src for $s"; continue; }
     $PY $MKCV --from-split "$src" --out-prefix "$SP/cv_${s}" --k "$K" --seed 0
   done
 }
