@@ -106,7 +106,7 @@ def fig1(summ, boot, metric, outdir):
     axB.set_yticks(y); axB.set_yticklabels([TRACK_LABEL[t].replace("\n", " ") for t in bf.track], fontsize=8)
     axB.set_xlabel(f"Δ{metric.upper().replace('_','-')}  (best FM − k-mer)")
     axB.set_title("b  Foundation models do not beat k-mer")
-    _save(fig, str(outdir / "fig1_benchmark_baseline"))
+    _save(fig, str(outdir / f"fig1_benchmark_baseline_{metric}"))
 
 
 def fig2(summ, boot, metric, outdir):
@@ -145,7 +145,7 @@ def fig2(summ, boot, metric, outdir):
     axB.set_ylabel(metric.upper().replace("_", "-"))
     axB.set_ylim(0.5, 0.78)
     axB.set_title("b  Component decomposition (light=full, dark=3'UTR iso)")
-    _save(fig, str(outdir / "fig2_fusion_model"))
+    _save(fig, str(outdir / f"fig2_fusion_model_{metric}"))
 
 
 def fig3(summ, boot, metric, outdir):
@@ -165,7 +165,7 @@ def fig3(summ, boot, metric, outdir):
         txt.append(f"{r.A.replace('rnafm_','')} vs {r.B.replace('rnafm_','')}: "
                    f"Δ={r['diff']:+.3f} p={r.p:.3f}")
     ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes, va="top", fontsize=7.5)
-    _save(fig, str(outdir / "fig3_region_ablation"))
+    _save(fig, str(outdir / f"fig3_region_ablation_{metric}"))
 
 
 def fig4(summ, boot, metric, outdir):
@@ -186,7 +186,7 @@ def fig4(summ, boot, metric, outdir):
     ax.set_xlabel(f"Δ{metric.upper().replace('_','-')}  (fusion − k-mer)")
     ax.set_title("Multi-label: fusion vs k-mer per compartment")
     ax.legend(title="resolution", fontsize=8)
-    _save(fig, str(outdir / "fig4_multilabel"))
+    _save(fig, str(outdir / f"fig4_multilabel_{metric}"))
 
 
 def main():
