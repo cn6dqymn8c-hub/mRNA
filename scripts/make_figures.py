@@ -189,10 +189,61 @@ def fig4(summ, boot, metric, outdir):
     _save(fig, str(outdir / f"fig4_multilabel_{metric}"))
 
 
+def fig_combined(summ, boot, outdir):
+    """One big figure: rows = ROC-AUC / AUPRC; cols = all-model bars / fusion−k-mer Δ."""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8.4),
+                             gridspec_kw={"width_ratios": [2.4, 1]})
+    panel = iter("abcd")
+    for row, metric in enumerate(["roc_auc", "pr_auc"]):
+        col = f"test_{metric}"
+        mlabel = metric.upper().replace("_", "-")
+        axL, axR = axes[row]
+
+        # left: per-setting all-model bars
+        sub = summ[summ.label_scheme == "soma_vs_neurite"]
+        xticks, xlabels, x = [], [], 0
+        for t in BIN_TRACKS:
+            d = sub[sub.track == t]
+            present = [m for m in MODEL_ORDER if m in set(d.model)]
+            kmer_v = float(d[d.model == "kmer"][col].iloc[0]) if "kmer" in set(d.model) else np.nan
+            for m in present:
+                axL.bar(x, float(d[d.model == m][col].iloc[0]), color=_color(m),
+                        width=0.9, edgecolor="black", linewidth=0.3)
+                x += 1
+            if np.isfinite(kmer_v):
+                axL.plot([x - len(present) - 0.4, x - 0.6], [kmer_v, kmer_v], "--",
+                         color="black", lw=0.8, zorder=5)
+            xticks.append(x - len(present) / 2 - 0.5); xlabels.append(TRACK_LABEL[t]); x += 1.5
+        axL.set_xticks(xticks); axL.set_xticklabels(xlabels)
+        axL.set_ylabel(mlabel); axL.set_ylim(0.5, max(0.8, sub[col].max() + 0.03))
+        axL.set_title(f"{next(panel)}  All models per setting — {mlabel} (dashed = k-mer)")
+        if row == 0:
+            h = [plt.Rectangle((0, 0), 1, 1, color=c) for c in (C_KMER, C_FM, C_NET, C_ENG, C_FUS)]
+            axL.legend(h, ["k-mer", "foundation model", "task-specific net", "length/engineered", "fusion"],
+                       fontsize=7, ncol=2, loc="upper left")
+
+        # right: fusion − kmer Δ ± CI
+        fk = boot[(boot.group == "fusion_vs_kmer") & (boot.metric == metric)]
+        fk = fk.set_index("track").reindex(BIN_TRACKS).reset_index()
+        y = np.arange(len(fk))[::-1]
+        axR.errorbar(fk["diff"], y, xerr=[fk["diff"] - fk.ci_lo, fk.ci_hi - fk["diff"]],
+                     fmt="o", color=C_FUS, capsize=3)
+        axR.axvline(0, color="black", lw=0.8)
+        axR.set_yticks(y); axR.set_yticklabels([TRACK_LABEL[t].replace("\n", " ") for t in fk.track], fontsize=8)
+        axR.set_xlabel(f"Δ{mlabel}  (fusion − k-mer)")
+        axR.set_title(f"{next(panel)}  Fusion vs k-mer")
+        for yi, (_, r) in zip(y, fk.iterrows()):
+            axR.text(r.ci_hi + 0.002, yi, "*" if r.significant else "ns", va="center", fontsize=9)
+    fig.tight_layout()
+    _save(fig, str(outdir / "fig_main_combined_roc_pr"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", type=Path, default=Path("results"))
     ap.add_argument("--metric", default="roc_auc", choices=["roc_auc", "pr_auc"])
+    ap.add_argument("--combined", action="store_true",
+                    help="also emit one big ROC+PR figure (fig_main_combined_roc_pr)")
     args = ap.parse_args()
 
     summ = pd.read_csv(args.results_dir / "summary_table.csv")
@@ -205,6 +256,8 @@ def main():
     fig2(summ, boot, args.metric, outdir)
     fig3(summ, boot, args.metric, outdir)
     fig4(summ, boot, args.metric, outdir)
+    if args.combined:
+        fig_combined(summ, boot, outdir)
     print("done.")
 
 
