@@ -1,0 +1,18 @@
+source,source_label,species,resolution,assay,n_rows,n_labels
+Tushev2018_isoform,Tushev 2018 isoform,mouse,isoform,isoform/APA,2782,2
+Ciolli_TableS2_isoforms,Ciolli 2019 isoform,mouse,isoform,isoform/APA,1173,2
+Mikl2022_isoform_reported_3utr,Mikl 2022 isoform,mouse,isoform,isoform/APA,536,2
+Taliaferro2016_NIHMS754332_supplement_2,Taliaferro 2016 isoform,mouse,isoform,isoform/APA,412,1
+Middleton_TableS7_isoDend,Middleton 2019 isoform,mouse,isoform,isoform/APA,298,1
+AllIsoforms_coordinates,Andreassi 2021 isoform,rat,isoform,isoform/APA,8290,2
+Middleton2019,Middleton 2019,mouse,gene,localization,5556,1
+Gork2021_bulk,Gork 2021,mouse,gene,localization,1016,2
+Perez2021,Perez 2021,rat,gene,localization,6013,2
+Cajigas2012_bulk,Cajigas 2012,rat,gene,localization,1168,2
+Loedige2023,Loedige 2023,mouse,gene,fractionation,6687,3
+Ouwenga2017_GSE74506,Ouwenga 2017,mouse,gene,fractionation,3705,3
+Biever2020,Biever 2020,mouse,gene,fractionation,1814,3
+June2023,June 2023,mouse,gene,fractionation,1712,3
+Shigeoka2016,Shigeoka 2016,mouse,gene,fractionation,1163,2
+Human_neuronal_localization_all_transcripts,Our human,human,gene,database,289,7
+BioMart_subcellular_localization,Our mouse/rat,mouse/rat,gene,database,478,6
