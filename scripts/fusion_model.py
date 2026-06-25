@@ -7,18 +7,19 @@ localization.
 
 Each view is projected to a common space; an input-dependent gate computes a
 softmax weight per view, and the views are combined into one fused vector that
-feeds an MLP head. This lets the model decide, per transcript, how much to trust
-the foundation-model representation vs the interpretable engineered features —
-and is the mechanism by which fusion can beat either view (or k-mer) alone.
+feeds an MLP head.
 
-Trained with the SAME masked-BCE + pos_weight + per-sample weight + per-label
-mask + leakage-safe split + early stopping as the other model families, so it
-enters the benchmark on equal footing.
+Training improvements (default ON; controllable via args with safe getattr defaults
+so the calling script needs no new flags):
+  * label smoothing (noise-robust BCE)        -> args.fusion_label_smooth (0.05)
+  * validation-only hyperparameter search      -> args.fusion_hp_search   (True)
+  * multi-seed ensemble (averaged probabilities)-> args.fusion_ensemble    (3)
+HP search uses ONLY the validation set (no test leakage); the ensemble averages
+per-seed probabilities. The deployable artifact stores all ensemble members.
 
-Interface mirrors finetune_model / train_task_specific:
+Interface (unchanged):
     train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
                  sample_weight=None, label_mask=None) -> (prob_va, prob_te)
-where `blocks` is a list of (N, d_i) feature matrices aligned to the gene rows.
 """
 from __future__ import annotations
 
@@ -44,7 +45,6 @@ def _build_fusion(block_dims, n_classes, hidden=128, dropout=0.3):
             )
 
         def forward(self, blocks, return_gate=False):
-            # blocks: list of (B, d_i)
             h = [self.norm[i](torch.relu(self.proj[i](x))) for i, x in enumerate(blocks)]
             H = torch.stack(h, dim=1)                 # (B, n_views, hidden)
             scores = self.gate(H).squeeze(-1)         # (B, n_views)
@@ -59,7 +59,6 @@ def _build_fusion(block_dims, n_classes, hidden=128, dropout=0.3):
 def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
                  sample_weight=None, label_mask=None):
     import torch
-    import torch.nn as nn
     import torch.nn.functional as F
     from torch.utils.data import DataLoader, Dataset
     from sklearn.metrics import roc_auc_score
@@ -85,6 +84,21 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
     block_dims = [b.shape[1] for b in blocks_s]
     print(f"[fusion] views={len(blocks_s)} dims={block_dims}")
 
+    # ---- config (improvements; safe defaults) ----
+    label_smooth = float(getattr(args, "fusion_label_smooth", 0.05))
+    n_ensemble = max(1, int(getattr(args, "fusion_ensemble", 3)))
+    do_hp = bool(getattr(args, "fusion_hp_search", True))
+    base_seed = int(getattr(args, "seed", 0))
+    batch = int(getattr(args, "ts_batch", 64))
+    epochs = int(getattr(args, "ts_epochs", 60))
+    patience = int(getattr(args, "ts_patience", 8))
+
+    known = label_mask[tr_idx].sum(axis=0)
+    pos = (Y[tr_idx] * label_mask[tr_idx]).sum(axis=0)
+    neg = known - pos
+    pos_weight = torch.tensor(np.clip(neg / np.clip(pos, 1, None), 0.2, 5.0),
+                              dtype=torch.float32, device=device)
+
     class DS(Dataset):
         def __init__(self, idx):
             self.idx = list(idx)
@@ -96,50 +110,13 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
             j = self.idx[i]
             return [b[j] for b in blocks_s], Y[j], sample_weight[j], label_mask[j], j
 
-    def collate(batch):
+    def collate(b):
         nv = len(blocks_s)
-        xs = [torch.tensor(np.stack([b[0][v] for b in batch])) for v in range(nv)]
-        ys = torch.tensor(np.stack([b[1] for b in batch]), dtype=torch.float32)
-        ws = torch.tensor(np.stack([b[2] for b in batch]), dtype=torch.float32)
-        ms = torch.tensor(np.stack([b[3] for b in batch]), dtype=torch.float32)
-        owners = [b[4] for b in batch]
-        return xs, ys, ws, ms, owners
-
-    torch.manual_seed(int(getattr(args, "seed", 0)))
-    hidden, dropout = 128, 0.3
-    model = _build_fusion(block_dims, nC, hidden=hidden, dropout=dropout).to(device)
-
-    known = label_mask[tr_idx].sum(axis=0)
-    pos = (Y[tr_idx] * label_mask[tr_idx]).sum(axis=0)
-    neg = known - pos
-    pos_weight = torch.tensor(np.clip(neg / np.clip(pos, 1, None), 0.2, 5.0),
-                              dtype=torch.float32, device=device)
-
-    opt = torch.optim.AdamW(model.parameters(), lr=float(getattr(args, "ts_lr", 1e-3)),
-                            weight_decay=1e-4)
-    batch = int(getattr(args, "ts_batch", 64))
-
-    def run(idx, train):
-        dl = DataLoader(DS(idx), batch_size=batch, shuffle=train, collate_fn=collate)
-        model.train(train)
-        pos_of = {int(j): p for p, j in enumerate(idx)}
-        out = np.zeros((len(idx), nC), dtype=np.float32)
-        for xs, ys, ws, ms, owners in dl:
-            xs = [x.to(device) for x in xs]
-            ys, ws, ms = ys.to(device), ws.to(device), ms.to(device)
-            with torch.set_grad_enabled(train):
-                logits = model(xs)
-                raw = F.binary_cross_entropy_with_logits(logits, ys, pos_weight=pos_weight, reduction="none")
-                eff = ms * ws
-                loss = (raw * eff).sum() / eff.sum().clamp(min=1.0)
-            if train:
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                opt.step()
-            lg = logits.detach().float().cpu().numpy()
-            for k, j in enumerate(owners):
-                out[pos_of[int(j)]] = lg[k]
-        return out
+        xs = [torch.tensor(np.stack([x[0][v] for x in b])) for v in range(nv)]
+        ys = torch.tensor(np.stack([x[1] for x in b]), dtype=torch.float32)
+        ws = torch.tensor(np.stack([x[2] for x in b]), dtype=torch.float32)
+        ms = torch.tensor(np.stack([x[3] for x in b]), dtype=torch.float32)
+        return xs, ys, ws, ms, [x[4] for x in b]
 
     def macro_auc(idx, prob):
         vals = []
@@ -150,58 +127,120 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
                 vals.append(roc_auc_score(yt, prob[v, j]))
         return float(np.mean(vals)) if vals else 0.0
 
-    best_auc, best_state, stale = -1.0, None, 0
-    epochs = int(getattr(args, "ts_epochs", 60))
-    patience = int(getattr(args, "ts_patience", 8))
-    for ep in range(epochs):
-        run(tr_idx, True)
-        va_prob = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
-        auc = macro_auc(va_idx, va_prob)
-        print(f"[fusion] epoch {ep + 1}/{epochs} val_macro_auc={auc:.4f}", flush=True)
-        if auc > best_auc + 1e-6:
-            best_auc, stale = auc, 0
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        else:
-            stale += 1
-            if stale >= patience:
-                print(f"[fusion] early stop after {stale} non-improving epochs.")
-                break
+    def fit_one(hidden, dropout, lr, seed):
+        """Train one fusion net with early stopping; return (state, va_prob, te_prob, best_auc)."""
+        torch.manual_seed(seed)
+        model = _build_fusion(block_dims, nC, hidden=hidden, dropout=dropout).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    if best_state is not None:
+        def run(idx, train):
+            dl = DataLoader(DS(idx), batch_size=batch, shuffle=train, collate_fn=collate)
+            model.train(train)
+            pos_of = {int(j): p for p, j in enumerate(idx)}
+            out = np.zeros((len(idx), nC), dtype=np.float32)
+            for xs, ys, ws, ms, owners in dl:
+                xs = [x.to(device) for x in xs]
+                ys, ws, ms = ys.to(device), ws.to(device), ms.to(device)
+                if train and label_smooth > 0:
+                    ys = ys * (1.0 - label_smooth) + 0.5 * label_smooth   # soft targets
+                with torch.set_grad_enabled(train):
+                    logits = model(xs)
+                    raw = F.binary_cross_entropy_with_logits(logits, ys, pos_weight=pos_weight, reduction="none")
+                    eff = ms * ws
+                    loss = (raw * eff).sum() / eff.sum().clamp(min=1.0)
+                if train:
+                    opt.zero_grad(set_to_none=True)
+                    loss.backward()
+                    opt.step()
+                lg = logits.detach().float().cpu().numpy()
+                for k, j in enumerate(owners):
+                    out[pos_of[int(j)]] = lg[k]
+            return out
+
+        best_auc, best_state, stale = -1.0, None, 0
+        for ep in range(epochs):
+            run(tr_idx, True)
+            va = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
+            auc = macro_auc(va_idx, va)
+            if auc > best_auc + 1e-6:
+                best_auc, stale = auc, 0
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                stale += 1
+                if stale >= patience:
+                    break
         model.load_state_dict(best_state)
-    va_prob = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
-    te_prob = 1.0 / (1.0 + np.exp(-run(te_idx, False)))
-    print(f"[fusion] best val_macro_auc={best_auc:.4f}")
+        va = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
+        te = 1.0 / (1.0 + np.exp(-run(te_idx, False)))
+        return best_state, va, te, best_auc
 
-    # Persist a deployable artifact so predict.py can score new sequences with the
-    # SAME fused architecture, per-view standardization and class order.
+    # ---- (1) hyperparameter search on VALIDATION only ----
+    if do_hp:
+        grid = [(h, d, lr) for h in (128, 256) for d in (0.3, 0.5) for lr in (1e-3,)]
+    else:
+        grid = [(128, 0.3, float(getattr(args, "ts_lr", 1e-3)))]
+    best_cfg, best_cfg_auc = grid[0], -1.0
+    for (h, d, lr) in grid:
+        _, _, _, auc = fit_one(h, d, lr, base_seed)
+        print(f"[fusion][hp] hidden={h} dropout={d} lr={lr} val_macro_auc={auc:.4f}", flush=True)
+        if auc > best_cfg_auc:
+            best_cfg_auc, best_cfg = auc, (h, d, lr)
+    h, d, lr = best_cfg
+    print(f"[fusion] best config: hidden={h} dropout={d} lr={lr} (val {best_cfg_auc:.4f})")
+
+    # ---- (2) multi-seed ensemble with the best config ----
+    states, va_probs, te_probs, aucs = [], [], [], []
+    for k in range(n_ensemble):
+        st, va, te, auc = fit_one(h, d, lr, base_seed + 100 * (k + 1))
+        states.append(st); va_probs.append(va); te_probs.append(te); aucs.append(auc)
+        print(f"[fusion][ensemble {k + 1}/{n_ensemble}] val_macro_auc={auc:.4f}", flush=True)
+    va_prob = np.mean(va_probs, axis=0)
+    te_prob = np.mean(te_probs, axis=0)
+    print(f"[fusion] ensemble of {n_ensemble} | per-seed val mean {np.mean(aucs):.4f}±{np.std(aucs):.4f} "
+          f"| ensemble val {macro_auc(va_idx, va_prob):.4f}")
+
     out_dir = getattr(args, "output_dir", None)
+
+    # ---- gate weights (interpretability), from the first ensemble member ----
+    import torch as _t
+    view_tags = list(getattr(args, "features", []) or [f"view{i}" for i in range(len(blocks_s))])
+    te_list = list(te_idx)
+    gate_w = np.zeros((len(te_list), len(blocks_s)), dtype=np.float32)
+    gm = _build_fusion(block_dims, nC, hidden=h, dropout=d).to(device)
+    gm.load_state_dict(states[0]); gm.eval()
+    with _t.no_grad():
+        for b in range(0, len(te_list), batch):
+            js = te_list[b:b + batch]
+            xs = [_t.tensor(np.stack([bl[j] for j in js])).to(device) for bl in blocks_s]
+            _, w = gm(xs, return_gate=True)
+            gate_w[b:b + len(js)] = w.detach().cpu().numpy()
+    if out_dir is not None:
+        import pandas as pd
+        pd.DataFrame({f"w_{t}": gate_w[:, i] for i, t in enumerate(view_tags)}).to_csv(
+            os.path.join(str(out_dir), "gate_weights.csv"), index=False)
+        print(f"[fusion] saved per-test gate weights -> {out_dir}/gate_weights.csv")
+
+    # ---- deployable artifact (all ensemble members) ----
     if out_dir is not None:
         import joblib
         joblib.dump(
             {
-                "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
-                "block_dims": block_dims,
-                "hidden": hidden,
-                "dropout": dropout,
-                "n_classes": nC,
-                "classes": list(classes),
-                "scalers": scalers,
+                "ensemble_states": states,                 # list of state_dicts (averaged at inference)
+                "state_dict": states[0],                   # back-compat single member
+                "block_dims": block_dims, "hidden": h, "dropout": d,
+                "n_classes": nC, "classes": list(classes), "scalers": scalers,
                 "features": list(getattr(args, "features", []) or []),
+                "label_smooth": label_smooth, "best_val_macro_auc": float(best_cfg_auc),
             },
             os.path.join(str(out_dir), "fusion_model.joblib"),
         )
-        print(f"[fusion] saved deployable artifact -> {out_dir}/fusion_model.joblib")
+        print(f"[fusion] saved deployable ensemble artifact ({len(states)} members) -> "
+              f"{out_dir}/fusion_model.joblib")
     return va_prob, te_prob
 
 
 def score_fusion(artifact_dir, blocks, device="cpu"):
-    """Score new sequences with a saved fusion artifact.
-
-    `blocks` is a list of (N, d_i) raw feature matrices in the SAME order as the
-    training `--features` views; per-view scalers and the fused net are reloaded
-    from `fusion_model.joblib`. Returns an (N, n_classes) probability array.
-    """
+    """Score new sequences with a saved fusion artifact (averages ensemble members)."""
     import joblib
     import torch
 
@@ -209,16 +248,18 @@ def score_fusion(artifact_dir, blocks, device="cpu"):
     if len(blocks) != len(bundle["block_dims"]):
         raise SystemExit(
             f"[error] fusion expects {len(bundle['block_dims'])} feature views "
-            f"({bundle['features']}) but got {len(blocks)}."
-        )
+            f"({bundle['features']}) but got {len(blocks)}.")
     if str(device).startswith("cuda") and not torch.cuda.is_available():
         device = "cpu"
     blocks_s = [sc.transform(b).astype(np.float32) for sc, b in zip(bundle["scalers"], blocks)]
-    model = _build_fusion(bundle["block_dims"], bundle["n_classes"],
-                          hidden=bundle["hidden"], dropout=bundle["dropout"])
-    model.load_state_dict(bundle["state_dict"])
-    model.to(device).eval()
+    states = bundle.get("ensemble_states") or [bundle["state_dict"]]
     xs = [torch.tensor(b, device=device) for b in blocks_s]
-    with torch.no_grad():
-        logits = model(xs).cpu().numpy()
-    return 1.0 / (1.0 + np.exp(-logits))
+    probs = []
+    for st in states:
+        model = _build_fusion(bundle["block_dims"], bundle["n_classes"],
+                              hidden=bundle["hidden"], dropout=bundle["dropout"])
+        model.load_state_dict(st)
+        model.to(device).eval()
+        with torch.no_grad():
+            probs.append(1.0 / (1.0 + np.exp(-model(xs).cpu().numpy())))
+    return np.mean(probs, axis=0)
