@@ -26,7 +26,7 @@ set -euo pipefail
 PY=python
 TRAIN=scripts/train_rnafm_multilabel.py
 MKCV=scripts/make_cv_folds.py
-IN="mixed_bulkgene_isoform_neuropil"
+IN="data_训练/mixed_bulkgene_isoform_neuropil"
 ORTHO="ortholog/human_mouse_rat_gene_to_ortholog_group.tsv"
 SP=results/_frozen_splits
 M_RNAFM=./rnafm

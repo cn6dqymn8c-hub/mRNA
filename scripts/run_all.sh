@@ -18,7 +18,7 @@ set -euo pipefail
 
 PY=python
 TRAIN=scripts/train_rnafm_multilabel.py
-INPUT_DIR="全长_合并多标签输入_plus_mart_plus_isoform_files"   # bulk + isoform 同目录
+INPUT_DIR="data_训练/mixed_bulkgene_isoform_neuropil"   # bulk + isoform 同目录(已修正物种的重抽数据)
 ORTHO="ortholog/human_mouse_rat_gene_to_ortholog_group.tsv"
 GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz
      data_训练/Mus_musculus.GRCm39.116.gtf.gz
@@ -41,9 +41,11 @@ COMMON=(--label-scheme soma_vs_neurite --label-agg soft --source-mask
         "${SPECIES[@]}")
 
 # 原生 3'UTR 源(已是 3'UTR,跑 --region utr3 时原样通过,不 GTF 提取)。
-# 含 blank sequence_type 的 Andreassi 必须在此列出,否则会被当全长去提取。
-# 子串大小写不敏感匹配 source 列;按你数据的 source 取值核对。
-NATIVE=(andreassi taliaferro ciolli tushev mikl isodend)
+# 子串大小写不敏感匹配 source 列。新数据里需要显式标的只有 blank-seqtype 的
+# Andreassi(source="AllIsoforms_coordinates"),用 isoform 一个词即可命中;
+# 其余原生源(Tushev/Ciolli/Mikl/isoDend 的 *3utr*、Taliaferro 的 ALE)已由
+# seqtype_is_native_utr3 自动识别。已核验无任何全长 cDNA 源 source 含 "isoform"。
+NATIVE=(isoform)
 mkdir -p "$SPLIT_DIR"
 
 # ---------------------------------------------------------------------------

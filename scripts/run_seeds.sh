@@ -24,10 +24,10 @@ set -euo pipefail
 
 PY=python
 TRAIN=scripts/train_rnafm_multilabel.py
-IN="mixed_bulkgene_isoform_neuropil"
+IN="data_训练/mixed_bulkgene_isoform_neuropil"
 ORTHO="ortholog/human_mouse_rat_gene_to_ortholog_group.tsv"
 GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz data_训练/Mus_musculus.GRCm39.116.gtf.gz data_训练/Rattus_norvegicus.GRCr8.116.gtf.gz)
-NATIVE=(andreassi taliaferro ciolli tushev mikl isodend)
+NATIVE=(isoform)   # 命中 AllIsoforms_coordinates(Andreassi);其余原生源由 seqtype 自动识别
 SP=results/_frozen_splits
 M_RNAFM=./rnafm
 M_MRNAFM=./rnafm_codon
