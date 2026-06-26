@@ -1,0 +1,5 @@
+metric,value
+unique_isoform_sequences,32159
+unique_species_gene,21213
+raw_records,44464
+avg_labels_per_sequence,1.5806
