@@ -62,6 +62,26 @@ LABEL_ALIASES = {
 NEURITE_LABELS = {"Dendrite", "Neuropil", "Axon", "Neurite"}
 SOMA_LABELS = {"Cell_body"}
 FINE_LABELS = ["Cell_body", "Dendrite", "Neuropil", "Axon", "Neurite"]
+FINE_SYNAP_LABELS = ["Cell_body", "Dendrite", "Neuropil", "Axon", "Neurite", "Synap"]
+
+
+def configure_label_harmonization(separate_synap: bool = False) -> None:
+    """Configure project-level label harmonization.
+
+    Default behavior maps Synap/Synapse/Synaptic into Neuropil. For the
+    supplementary fine-label analysis, --separate-synap keeps synaptic evidence
+    as an independent target class while still treating it as neurite/process
+    evidence for the binary task.
+    """
+    global NEURITE_LABELS
+    if separate_synap:
+        for key in ("synap", "synapse", "synaptic"):
+            LABEL_ALIASES[key] = "Synap"
+        NEURITE_LABELS = {"Dendrite", "Neuropil", "Axon", "Neurite", "Synap"}
+    else:
+        for key in ("synap", "synapse", "synaptic"):
+            LABEL_ALIASES[key] = "Neuropil"
+        NEURITE_LABELS = {"Dendrite", "Neuropil", "Axon", "Neurite"}
 
 
 def canonical_label(value: object) -> str:
@@ -408,6 +428,7 @@ def apply_label_scheme(
     source_label_sets: dict[str, set[str]] | None = None,
     use_source_mask: bool = False,
     keep_assay: bool = False,
+    separate_synap: bool = False,
 ) -> tuple[pd.DataFrame, list[str], np.ndarray, np.ndarray]:
     df = df.copy()
     if min_sources > 1:
@@ -446,7 +467,7 @@ def apply_label_scheme(
         df["sample_weight"] = w
         return df, ["is_neurite"], w, np.ones((len(df), 1), dtype=np.float32)
 
-    classes_all = list(FINE_LABELS)
+    classes_all = list(FINE_SYNAP_LABELS if separate_synap else FINE_LABELS)
     if keep_assay:
         # Promote assay-readout labels (Ribosome/Cytoplasm) to extra target classes.
         # Per-label source-mask keeps them honest (only sources that ran the assay
@@ -948,7 +969,7 @@ def finetune_model(
     import torch.nn as nn
     import torch.nn.functional as F
     from torch.utils.data import DataLoader, Dataset
-    from sklearn.metrics import roc_auc_score
+    from sklearn.metrics import average_precision_score
 
     tok, base = load_model(args.model_dir, args.device)
     device = args.device
@@ -1156,23 +1177,23 @@ def finetune_model(
             return run_pooled(indices, train)
         return run_window(indices, train)
 
-    def macro_auc(indices, prob):
+    def macro_pr_auc(indices, prob):
         vals = []
         for j in range(nC):
             valid = label_mask[indices, j].astype(bool)
             yt = Y[indices, j][valid]
             if 0 < yt.sum() < len(yt):
-                vals.append(roc_auc_score(yt, prob[valid, j]))
+                vals.append(average_precision_score(yt, prob[valid, j]))
         return float(np.mean(vals)) if vals else 0.0
 
-    best_auc, best, stale = -1.0, None, 0
+    best_pr_auc, best, stale = -1.0, None, 0
     for ep in range(args.ft_epochs):
         run(tr_idx, True)
         va_prob = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
-        auc = macro_auc(va_idx, va_prob)
-        print(f"[finetune] epoch {ep + 1}/{args.ft_epochs} val_macro_auc={auc:.4f}", flush=True)
-        if auc > best_auc + 1e-6:
-            best_auc = auc
+        pr_auc = macro_pr_auc(va_idx, va_prob)
+        print(f"[finetune] epoch {ep + 1}/{args.ft_epochs} val_macro_pr_auc={pr_auc:.4f}", flush=True)
+        if pr_auc > best_pr_auc + 1e-6:
+            best_pr_auc = pr_auc
             stale = 0
             best = (
                 {k: v.detach().cpu().clone() for k, v in base.state_dict().items()},
@@ -1189,7 +1210,7 @@ def finetune_model(
         head.load_state_dict(best[1])
     va_prob = 1.0 / (1.0 + np.exp(-run(va_idx, False)))
     te_prob = 1.0 / (1.0 + np.exp(-run(te_idx, False)))
-    print(f"[finetune] best val_macro_auc={best_auc:.4f}")
+    print(f"[finetune] best val_macro_pr_auc={best_pr_auc:.4f}")
     if getattr(args, "save_finetune_checkpoint", False):
         ckpt_path = args.output_dir / "finetuned_model.pt"
         torch.save(
@@ -1203,7 +1224,7 @@ def finetune_model(
                 "pool": args.pool,
                 "ft_max_len": int(max_tok),
                 "ft_long_seq_policy": policy,
-                "best_val_macro_auc": float(best_auc),
+                "best_val_macro_pr_auc": float(best_pr_auc),
             },
             ckpt_path,
         )
@@ -1508,6 +1529,10 @@ def main():
                     "merged bulk+isoform file's blank-tagged bulk transcripts are not "
                     "silently used at full length under --region utr3.")
     ap.add_argument("--label-scheme", choices=["soma_vs_neurite", "fine"], default="soma_vs_neurite")
+    ap.add_argument("--separate-synap", action="store_true",
+                    help="for --label-scheme fine, keep Synap/Synapse/Synaptic as "
+                    "a separate target class instead of harmonizing it into Neuropil. "
+                    "For the binary task it still counts as neurite/process evidence.")
     ap.add_argument("--keep-assay-labels", action="store_true",
                     help="also model the assay-readout labels Ribosome/Cytoplasm as "
                     "fine target classes (a translation/fractionation axis, distinct "
@@ -1538,20 +1563,19 @@ def main():
                     "path; not usable with --arch/--finetune. 'length'/'engineered' "
                     "include the 3'UTR-length CONFOUND (also run --features length as a "
                     "baseline to quantify it); 'structure' needs ViennaRNA.")
+    ap.add_argument("--fusion", action="store_true",
+                    help="with --features, train the attention-gated late-fusion "
+                    "network in fusion_model.py instead of concatenating feature "
+                    "blocks into a logistic/mlp head.")
     # ---- feature family selector --------------------------------------------
-    ap.add_argument("--arch", choices=["fm", "rnatracker", "dm3loc", "fusion"], default="fm",
+    ap.add_argument("--arch", choices=["fm", "rnatracker", "dm3loc"], default="fm",
                     help="fm = foundation-model embeddings/finetune (default); "
-                    "rnatracker / dm3loc = purpose-built localization nets on one-hot; "
-                    "fusion = attention-gated fusion of feature views (requires "
-                    "--features, e.g. --features fm engineered) — the proposed model.")
+                    "rnatracker / dm3loc = purpose-built localization nets trained "
+                    "from scratch on one-hot sequence (same split/labels/eval).")
     ap.add_argument("--ts-max-len", type=int, default=4000, help="one-hot length for --arch nets")
     ap.add_argument("--ts-epochs", type=int, default=30)
     ap.add_argument("--ts-patience", type=int, default=5)
-    ap.add_argument("--ts-batch", type=int, default=32,
-                    help="max batch size for --arch nets (length-bucketed)")
-    ap.add_argument("--ts-token-budget", type=int, default=60000,
-                    help="per-batch token budget (batch_size*padded_len) for --arch nets; "
-                         "lower it if OOM on long full-length sequences")
+    ap.add_argument("--ts-batch", type=int, default=32)
     ap.add_argument("--ts-lr", type=float, default=1e-3)
     # ---- foundation-model fine-tune -----------------------------------------
     ap.add_argument("--finetune", action="store_true")
@@ -1592,9 +1616,6 @@ def main():
     args = ap.parse_args()
 
     is_task_specific = args.arch in ("rnatracker", "dm3loc")
-    is_fusion = args.arch == "fusion"
-    if is_fusion and not args.features:
-        raise SystemExit("[error] --arch fusion requires --features (e.g. --features fm engineered).")
 
     if args.selftest:
         import torch
@@ -1610,6 +1631,7 @@ def main():
         raise SystemExit("[error] --input-dir is required unless --selftest is used.")
     if args.label_scheme == "fine" and not args.source_mask:
         raise SystemExit("[error] --label-scheme fine requires --source-mask.")
+    configure_label_harmonization(args.separate_synap)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     import torch
@@ -1635,7 +1657,8 @@ def main():
     rep = select_representative_rows(all_rows) if args.sample_level == "gene" else all_rows
 
     observed_labels = collect_observed_labels(rep)
-    known_labels = set(FINE_LABELS) | ASSAY_LABELS
+    fine_known = FINE_SYNAP_LABELS if args.separate_synap else FINE_LABELS
+    known_labels = set(fine_known) | ASSAY_LABELS
     unknown_labels = sorted(observed_labels - known_labels)
     pd.DataFrame({"unknown_or_unmodeled_label": unknown_labels}).to_csv(
         args.output_dir / "unknown_label_audit.csv", index=False
@@ -1692,32 +1715,14 @@ def main():
     pd.DataFrame([audit]).to_csv(args.output_dir / "conflict_audit.csv", index=False)
 
     if args.features and (is_task_specific or args.finetune):
-        raise SystemExit("[error] --features (stacked head) is not usable with --arch / --finetune.")
+        raise SystemExit("[error] --features (stacked/fusion head) is not usable with --arch / --finetune.")
+    if args.fusion and not args.features:
+        raise SystemExit("[error] --fusion requires --features, e.g. --fusion --features fm engineered.")
 
-    fusion_blocks_full = None
+    feature_blocks_full = None
     if is_task_specific:
         feat_tag = args.arch
         emb_full = None
-    elif is_fusion:
-        import sys
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from engineered_features import build_feature_block
-        seqs_all = genes["sequence"].tolist()
-        fusion_blocks_full, block_tags = [], []
-        for fblk in args.features:
-            if fblk == "fm":
-                model_tag = os.path.basename(os.path.normpath(args.model_dir))
-                emb_sig = (f"{model_tag}_{args.sample_level}_{args.region}_"
-                           f"{args.pool}_{args.window_pool}_{args.max_tokens}")
-                args.emb_cache_dir.mkdir(parents=True, exist_ok=True)
-                fusion_blocks_full.append(get_embeddings(genes, args, args.emb_cache_dir / f"emb_{emb_sig}.npy"))
-                block_tags.append(model_tag)
-            else:
-                X, tag = build_feature_block(fblk, seqs_all, kmer_k=args.kmer_k)
-                fusion_blocks_full.append(X.astype(np.float32))
-                block_tags.append(tag)
-        emb_full = None
-        feat_tag = "fusion(" + "+".join(block_tags) + ")"
     elif args.finetune:
         feat_tag = os.path.basename(os.path.normpath(args.model_dir))
         emb_full = None
@@ -1739,9 +1744,13 @@ def main():
                 X, tag = build_feature_block(fblk, seqs_all, kmer_k=args.kmer_k)
                 blocks.append(X.astype(np.float32))
                 tags.append(tag)
-        emb_full = np.concatenate(blocks, axis=1).astype(np.float32)
+        feature_blocks_full = [b.astype(np.float32) for b in blocks]
+        emb_full = None if args.fusion else np.concatenate(blocks, axis=1).astype(np.float32)
         feat_tag = "+".join(tags)
-        print(f"[features] stacked {tags} -> {emb_full.shape}")
+        if args.fusion:
+            print(f"[fusion] feature views {tags} -> {[b.shape for b in feature_blocks_full]}")
+        else:
+            print(f"[features] stacked {tags} -> {emb_full.shape}")
     elif args.baseline == "kmer":
         feat_tag = f"kmer{args.kmer_k}_{args.region}"
         print(f"[baseline] computing {args.kmer_k}-mer features for {len(genes)} sequences ...")
@@ -1758,6 +1767,7 @@ def main():
         genes, args.label_scheme, args.min_support, args.label_agg, args.min_label_sources,
         args.min_sources, source_label_sets=src_measured, use_source_mask=args.source_mask,
         keep_assay=args.keep_assay_labels,
+        separate_synap=args.separate_synap,
     )
     genes = genes.reset_index(drop=True)
     if len(genes) == 0:
@@ -1770,9 +1780,9 @@ def main():
         print("[source-mask fine] per-label evaluable coverage:",
               {c: round(float(label_mask_full[:, j].mean()), 3) for j, c in enumerate(classes)})
 
-    emb = None if (args.finetune or is_task_specific or is_fusion) else emb_full[genes["_uid"].to_numpy()]
-    fusion_blocks = ([b[genes["_uid"].to_numpy()] for b in fusion_blocks_full]
-                     if is_fusion else None)
+    uid = genes["_uid"].to_numpy()
+    emb = None if (args.finetune or is_task_specific or args.fusion) else emb_full[uid]
+    feature_blocks = [b[uid] for b in feature_blocks_full] if args.fusion else None
 
     ortholog_map = load_ortholog_map(args.ortholog_map)
     groups = build_leakage_safe_groups(genes, ortholog_map)
@@ -1792,8 +1802,8 @@ def main():
         groups = groups[keep]
         if emb is not None:
             emb = emb[keep]
-        if fusion_blocks is not None:
-            fusion_blocks = [b[keep] for b in fusion_blocks]
+        if feature_blocks is not None:
+            feature_blocks = [b[keep] for b in feature_blocks]
         genes["split_group"] = groups
         print(f"[restrict-to-split] kept {len(genes)}/{n0} samples present in the frozen split")
         if len(genes) == 0:
@@ -1827,17 +1837,7 @@ def main():
                           np.where(np.isin(np.arange(len(genes)), va_idx), "val", "test")),
     }).to_csv(args.output_dir / "split_assignments.csv", index=False)
 
-    if is_fusion:
-        import sys
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from fusion_model import train_fusion
-        prob_va, prob_te = train_fusion(
-            fusion_blocks, Y, classes, tr_idx, va_idx, te_idx, args,
-            sample_weight=sw_all, label_mask=label_mask_full,
-        )
-        scaler = models = None
-        run_name = f"{feat_tag}_{args.region}"
-    elif is_task_specific:
+    if is_task_specific:
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from task_specific_models import train_task_specific
@@ -1854,6 +1854,16 @@ def main():
         )
         scaler = models = None
         run_name = f"{feat_tag}_finetune_{args.region}_{args.ft_long_seq_policy}"
+    elif args.fusion:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from fusion_model import train_fusion
+        prob_va, prob_te = train_fusion(
+            feature_blocks, Y, classes, tr_idx, va_idx, te_idx, args,
+            sample_weight=sw_all, label_mask=label_mask_full,
+        )
+        scaler = models = None
+        run_name = f"{feat_tag}_fusion_{args.region}"
     else:
         scaler, models, prob_va = train_head(
             emb[tr_idx], Y[tr_idx], emb[va_idx], args.classifier,
