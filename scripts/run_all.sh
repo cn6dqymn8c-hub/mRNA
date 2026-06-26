@@ -164,6 +164,19 @@ fine() {
   $PY $TRAIN "${b1[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O1/dm3loc"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O1/rnafm"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O1/dnabert2"
+  $PY $TRAIN "${b1[@]}" --arch fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O1/fusion"
+  # CDS fine(bulk,gene)— U2;cds 专属 codon 模型 mRNA-FM 在此入场(对齐二分类 track2)
+  local SP2="$SPLIT_DIR/split_U2_gene.csv" O2="$OUT/fine_cds_gene"
+  local b2=(--input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}"
+            "${C[@]}" --split-assignments "$SP2")
+  $PY $TRAIN "${b2[@]}" --baseline kmer --kmer-k 4               --output-dir "$O2/kmer"
+  $PY $TRAIN "${b2[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O2/dm3loc"
+  $PY $TRAIN "${b2[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O2/rnafm"
+  $PY $TRAIN "${b2[@]}" --model-dir "$M_MRNAFM"  --max-tokens 1024 --output-dir "$O2/mrnafm"
+  $PY $TRAIN "${b2[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O2/dnabert2"
+  $PY $TRAIN "${b2[@]}" --arch fusion --features fm engineered --model-dir "$M_MRNAFM" \
+       --max-tokens 1024 --output-dir "$O2/fusion"
   # 全长 fine(bulk,gene)
   local SP3="$SPLIT_DIR/split_U3_gene.csv" O3="$OUT/fine_full_gene"
   local b3=(--input-dir "$INPUT_DIR" --region full --sample-level gene
@@ -172,6 +185,8 @@ fine() {
   $PY $TRAIN "${b3[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O3/dm3loc"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O3/rnafm"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O3/dnabert2"
+  $PY $TRAIN "${b3[@]}" --arch fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O3/fusion"
 }
 
 # ---------------------------------------------------------------------------
