@@ -30,7 +30,7 @@ GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz data_训练/Mus_musculus.GRCm39.
 NATIVE=(isoform)   # 命中 AllIsoforms_coordinates(Andreassi);其余原生源由 seqtype 自动识别
 SP=results/_frozen_splits
 M_RNAFM=./rnafm
-M_MRNAFM=./rnafm_codon
+M_MRNAFM=./mrnafm
 SEEDS="${SEEDS:-1 2 3 4}"   # seed 0 already exists
 
 # full-species common args (NO --species), seed is appended per run

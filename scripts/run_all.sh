@@ -25,7 +25,7 @@ GTF=(data_训练/Homo_sapiens.GRCh38.116.gtf.gz
      data_训练/Rattus_norvegicus.GRCr8.116.gtf.gz)
 
 M_RNAFM=./rnafm            # RNA-FM   (nt; utr3/cds/full)
-M_MRNAFM=./rnafm_codon     # mRNA-FM  (codon; 仅 cds)
+M_MRNAFM=./mrnafm          # mRNA-FM  (codon; 仅 cds)
 M_UTRBERT=./utrbert-3mer   # UTR-BERT (仅 utr3)
 M_DNABERT=./DNABERT-2-117M # DNABERT-2(nt; utr3/cds/full;同脚本加载,名字含 "dnabert" 即走专用分支)
 # 注:mRNABERT 未纳入——它需区域感知双 tokenization(UTR=nt/CDS=codon,空格分隔,需 CDS 边界),
@@ -33,9 +33,9 @@ M_DNABERT=./DNABERT-2-117M # DNABERT-2(nt; utr3/cds/full;同脚本加载,名字�
 
 OUT=results
 SPLIT_DIR=$OUT/_frozen_splits
-# 物种范围:human 仅 ~289 基因、无法做有意义的 per-species 评估,默认只用 mouse+rat
-# 做干净的"啮齿类"benchmark。想保留 human 就把这行设为空: SPECIES=()
-SPECIES=(--species mouse rat)
+# 物种范围:统一【全物种】(mouse+rat+human,以 mixed_bulkgene_isoform_neuropil 为准),
+# 与 run_cv.sh / run_seeds.sh 保持同一数据 universe。如需只跑啮齿类: SPECIES=(--species mouse rat)
+SPECIES=()
 COMMON=(--label-scheme soma_vs_neurite --label-agg soft --source-mask
         --classifier logistic --min-support 150 --seed 0 --ortholog-map "$ORTHO"
         "${SPECIES[@]}")
@@ -70,6 +70,38 @@ make_splits() {
 
   # 消融 split = cds 基因交集(cds⊆utr3⊆full,这批基因三区域都能跑)
   cp "$SPLIT_DIR/split_U2_gene.csv" "$SPLIT_DIR/split_Uablate_gene.csv"
+}
+
+# ---------------------------------------------------------------------------
+# 0b) fine 专用冻结 split —— 必须与 fine 同一 universe 独立生成。
+#   二分类(soma_vs_neurite)会因 --source-mask 删除一批 soma-only negative,
+#   fine(多标签)不这样删,样本更多;复用二分类 split 会 "does not cover N samples"。
+#   split 与模型无关(由 groups+labels+seed 决定),故用 --baseline kmer 生成——
+#   不需要 FM 权重,只 utr3/cds 需要 GTF。
+# ---------------------------------------------------------------------------
+make_fine_splits() {
+  local FC=(--label-scheme fine --label-agg soft --source-mask --classifier logistic
+            --min-support 200 --seed 0 --ortholog-map "$ORTHO" "${SPECIES[@]}" --baseline kmer)
+  echo "### split fine-utr3-gene"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level gene \
+    --gtf "${GTF[@]}" --native-region-sources "${NATIVE[@]}" "${FC[@]}" \
+    --output-dir "$SPLIT_DIR/fineU1_gene"
+  cp "$SPLIT_DIR/fineU1_gene/split_assignments.csv" "$SPLIT_DIR/split_fine_utr3_gene.csv"
+
+  echo "### split fine-cds-gene"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region cds --sample-level gene \
+    --gtf "${GTF[@]}" "${FC[@]}" --output-dir "$SPLIT_DIR/fineU2_gene"
+  cp "$SPLIT_DIR/fineU2_gene/split_assignments.csv" "$SPLIT_DIR/split_fine_cds_gene.csv"
+
+  echo "### split fine-full-gene"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level gene \
+    "${FC[@]}" --output-dir "$SPLIT_DIR/fineU3_gene"
+  cp "$SPLIT_DIR/fineU3_gene/split_assignments.csv" "$SPLIT_DIR/split_fine_full_gene.csv"
+
+  echo "### split fine-full-isoform (供 run_seeds / run_cv 使用)"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level isoform_sequence_union \
+    "${FC[@]}" --output-dir "$SPLIT_DIR/fineU3_isoform"
+  cp "$SPLIT_DIR/fineU3_isoform/split_assignments.csv" "$SPLIT_DIR/split_fine_full_isoform.csv"
 }
 
 # ---------------------------------------------------------------------------
@@ -157,17 +189,17 @@ fine() {
   local C=(--label-scheme fine --label-agg soft --source-mask --classifier logistic
            --min-support 200 --seed 0 --ortholog-map "$ORTHO")
   # 3'UTR fine(全部数据,gene)
-  local SP1="$SPLIT_DIR/split_U1_gene.csv" O1="$OUT/fine_utr3_gene"
+  local SP1="$SPLIT_DIR/split_fine_utr3_gene.csv" O1="$OUT/fine_utr3_gene"
   local b1=(--input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}"
             --native-region-sources "${NATIVE[@]}" "${C[@]}" --split-assignments "$SP1")
   $PY $TRAIN "${b1[@]}" --baseline kmer --kmer-k 4               --output-dir "$O1/kmer"
   $PY $TRAIN "${b1[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O1/dm3loc"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O1/rnafm"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O1/dnabert2"
-  $PY $TRAIN "${b1[@]}" --arch fusion --features fm engineered --model-dir "$M_RNAFM" \
+  $PY $TRAIN "${b1[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
        --max-tokens 1022 --output-dir "$O1/fusion"
   # CDS fine(bulk,gene)— U2;cds 专属 codon 模型 mRNA-FM 在此入场(对齐二分类 track2)
-  local SP2="$SPLIT_DIR/split_U2_gene.csv" O2="$OUT/fine_cds_gene"
+  local SP2="$SPLIT_DIR/split_fine_cds_gene.csv" O2="$OUT/fine_cds_gene"
   local b2=(--input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}"
             "${C[@]}" --split-assignments "$SP2")
   $PY $TRAIN "${b2[@]}" --baseline kmer --kmer-k 4               --output-dir "$O2/kmer"
@@ -175,17 +207,17 @@ fine() {
   $PY $TRAIN "${b2[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O2/rnafm"
   $PY $TRAIN "${b2[@]}" --model-dir "$M_MRNAFM"  --max-tokens 1024 --output-dir "$O2/mrnafm"
   $PY $TRAIN "${b2[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O2/dnabert2"
-  $PY $TRAIN "${b2[@]}" --arch fusion --features fm engineered --model-dir "$M_MRNAFM" \
+  $PY $TRAIN "${b2[@]}" --fusion --features fm engineered --model-dir "$M_MRNAFM" \
        --max-tokens 1024 --output-dir "$O2/fusion"
   # 全长 fine(bulk,gene)
-  local SP3="$SPLIT_DIR/split_U3_gene.csv" O3="$OUT/fine_full_gene"
+  local SP3="$SPLIT_DIR/split_fine_full_gene.csv" O3="$OUT/fine_full_gene"
   local b3=(--input-dir "$INPUT_DIR" --region full --sample-level gene
             "${C[@]}" --split-assignments "$SP3")
   $PY $TRAIN "${b3[@]}" --baseline kmer --kmer-k 4               --output-dir "$O3/kmer"
   $PY $TRAIN "${b3[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O3/dm3loc"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O3/rnafm"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O3/dnabert2"
-  $PY $TRAIN "${b3[@]}" --arch fusion --features fm engineered --model-dir "$M_RNAFM" \
+  $PY $TRAIN "${b3[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
        --max-tokens 1022 --output-dir "$O3/fusion"
 }
 
@@ -195,7 +227,7 @@ fine() {
 #   (它在 Track1B 是唯一显著超 k-mer 的);Track2 想试 codon 可把 M_RNAFM 换 M_MRNAFM。
 # ---------------------------------------------------------------------------
 fusion() {
-  local FB=(--arch fusion --features fm engineered --model-dir "$M_RNAFM")
+  local FB=(--fusion --features fm engineered --model-dir "$M_RNAFM")
   # 1A: 3'UTR gene
   $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}" \
     --native-region-sources "${NATIVE[@]}" "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U1_gene.csv" \
@@ -222,7 +254,7 @@ fusion() {
 # ---------------------------------------------------------------------------
 deploy() {
   $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level gene \
-    "${COMMON[@]}" --arch fusion --features fm engineered --model-dir "$M_RNAFM" \
+    "${COMMON[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
     --max-tokens 1022 --train-on-all --output-dir "$OUT/final_deploy_full_fusion"
   echo "部署模型已保存到 $OUT/final_deploy_full_fusion"
   echo "打分新序列:"
@@ -231,7 +263,8 @@ deploy() {
 }
 
 case "${1:-all}" in
-  splits)   make_splits ;;
+  splits)     make_splits; make_fine_splits ;;
+  finesplits) make_fine_splits ;;
   fusion)   fusion ;;
   deploy)   deploy ;;
   track1a)  track1a ;;
@@ -240,8 +273,8 @@ case "${1:-all}" in
   track3)   track3 ;;
   ablation) ablation ;;
   fine)     fine ;;
-  all)      make_splits; track1a; track1b; track2; track3; ablation; fine ;;
-  *) echo "usage: $0 [splits|track1a|track1b|track2|track3|ablation|fine|deploy|all]"; exit 1 ;;
+  all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; ablation; fine ;;
+  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|ablation|fine|fusion|deploy|all]"; exit 1 ;;
 esac
 
 echo "DONE. 合并主表:  find $OUT -name overall_metrics.csv"
