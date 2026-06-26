@@ -147,45 +147,53 @@ for ext in ("png", "pdf"):
 plt.close(fig)
 print("wrote fig_dataset_overview")
 
-# ============================ FIGURE 2: UpSet ===============================
+# ============================ FIGURE 2: UpSet (complete 3-part) =============
 top = combo_cnt.most_common(16)
-# order labels by total membership in shown combos
-lab_tot = Counter()
-for combo, c in top:
-    for l in combo:
-        lab_tot[l] += c
-rows = [l for l in LAB_ORDER if lab_tot[l] > 0]
-rr = {l: i for i, l in enumerate(rows)}
+# set size = true total sequences per compartment (co-occurrence diagonal)
+set_size = {l: int(co[idx[l], idx[l]]) for l in LAB_ORDER}
+rows = [l for l, _ in sorted(set_size.items(), key=lambda kv: -kv[1]) if set_size[l] > 0]
+rr = {l: i for i, l in enumerate(rows)}          # rr=0 -> largest set
+yof = lambda l: len(rows) - 1 - rr[l]            # largest set on top
 
-fig2 = plt.figure(figsize=(12, 6.5))
-gs2 = GridSpec(2, 1, height_ratios=[3, 2], hspace=0.05, figure=fig2)
-axbar = fig2.add_subplot(gs2[0])
-axmat = fig2.add_subplot(gs2[1], sharex=axbar)
-x = np.arange(len(top))
-sizes = [c for _, c in top]
+fig2 = plt.figure(figsize=(13, 6.8))
+gs2 = GridSpec(2, 2, width_ratios=[1, 4.2], height_ratios=[3, 2.2],
+               hspace=0.06, wspace=0.05, figure=fig2)
+axbar = fig2.add_subplot(gs2[0, 1])              # top-right: intersection sizes
+axmat = fig2.add_subplot(gs2[1, 1], sharex=axbar)  # bottom-right: dot matrix
+axset = fig2.add_subplot(gs2[1, 0], sharey=axmat)  # bottom-left: set sizes
+
+# --- intersection-size bars ---
+x = np.arange(len(top)); sizes = [c for _, c in top]
 axbar.bar(x, sizes, color="#3a7ca5", edgecolor="white")
 for xi, s in zip(x, sizes):
     axbar.text(xi, s + max(sizes) * 0.01, f"{s:,}", ha="center", va="bottom", fontsize=7)
 axbar.set_ylabel("sequences in combination")
 axbar.set_title("Compartment co-occurrence (UpSet) — top 16 combinations", loc="left", fontweight="bold")
-axbar.spines[["top", "right"]].set_visible(False)
-axbar.set_xticks([])
+axbar.spines[["top", "right"]].set_visible(False); axbar.set_xticks([])
 
-# matrix
-for i, l in enumerate(rows):
-    axmat.axhline(len(rows) - 1 - i, color="#eeeeee", lw=8, zorder=0)
+# --- dot matrix ---
+for l in rows:
+    axmat.axhline(yof(l), color="#eeeeee", lw=8, zorder=0)
 for xi, (combo, c) in enumerate(top):
-    members = sorted((rr[l] for l in combo))
-    ys = [len(rows) - 1 - m for m in members]
-    axmat.scatter([xi] * len(rows), [len(rows) - 1 - k for k in range(len(rows))],
-                  color="#d9d9d9", s=60, zorder=1)
+    axmat.scatter([xi] * len(rows), [yof(l) for l in rows], color="#d9d9d9", s=62, zorder=1)
+    ys = [yof(l) for l in combo]
     if ys:
-        axmat.scatter([xi] * len(ys), ys, color="#222222", s=60, zorder=2)
+        axmat.scatter([xi] * len(ys), ys, color="#222222", s=62, zorder=2)
         if len(ys) > 1:
             axmat.plot([xi, xi], [min(ys), max(ys)], color="#222222", lw=2, zorder=2)
-axmat.set_yticks(range(len(rows))); axmat.set_yticklabels(rows[::-1], fontsize=9)
+axmat.set_yticks(range(len(rows))); axmat.set_yticklabels([])
 axmat.set_xticks([]); axmat.set_ylim(-0.6, len(rows) - 0.4)
-axmat.spines[["top", "right", "bottom"]].set_visible(False)
+axmat.spines[["top", "right", "bottom", "left"]].set_visible(False)
+axmat.tick_params(left=False, labelleft=False)
+
+# --- set-size bars (left, growing leftwards) ---
+for l in rows:
+    axset.barh(yof(l), set_size[l], color="#8d99ae", height=0.6)
+    axset.text(set_size[l], yof(l), f"{set_size[l]:,} ", ha="right", va="center", fontsize=7, color="white")
+axset.invert_xaxis()
+axset.set_yticks(range(len(rows))); axset.set_yticklabels(rows[::-1], fontsize=9)
+axset.set_xlabel("set size (sequences)")
+axset.spines[["top", "right", "left"]].set_visible(False)
 for ext in ("png", "pdf"):
     fig2.savefig(f"{OUT}/fig_compartment_upset.{ext}", dpi=200, bbox_inches="tight")
 plt.close(fig2)
