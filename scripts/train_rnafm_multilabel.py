@@ -589,9 +589,11 @@ def load_model(model_dir: str, device: str):
     if is_alibi:
         # Window by NUCLEOTIDES (nt_per_token=1); BPE compresses to <= nt tokens, so a
         # window never overflows. _max_tokens is generous so --max-tokens controls the
-        # per-window nt length.
+        # per-window nt length. Override with ALIBI_MAX_TOKENS_CAP for explicit
+        # long-context controls such as DNABERT-2 ctx8000 comparisons.
         model._nt_per_token = 1
-        model._max_tokens = max(max_pos - 4, 4096) if max_pos > 16 else 4096
+        alibi_cap = int(os.environ.get("ALIBI_MAX_TOKENS_CAP", "4096"))
+        model._max_tokens = max(max_pos - 4, alibi_cap) if max_pos > 16 else alibi_cap
     else:
         model._nt_per_token = 3 if is_codon else 1
         model._max_tokens = max(8, max_pos - 4)
