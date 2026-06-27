@@ -166,6 +166,24 @@ track3() {
 }
 
 # ---------------------------------------------------------------------------
+# Track 3B —— 全长 × isoform_sequence_union(继承 U3 gene split,保留 isoform 序列)
+# ---------------------------------------------------------------------------
+track3isoform() {
+  local SP="$SPLIT_DIR/split_U3_gene.csv" O="$OUT/track3_full_isoform"
+  local base=(--input-dir "$INPUT_DIR" --region full --sample-level isoform_sequence_union
+              "${COMMON[@]}" --split-assignments "$SP")
+  $PY $TRAIN "${base[@]}" --baseline kmer --kmer-k 4               --output-dir "$O/kmer"
+  $PY $TRAIN "${base[@]}" --features length                         --output-dir "$O/length"
+  $PY $TRAIN "${base[@]}" --features engineered                     --output-dir "$O/engineered"
+  $PY $TRAIN "${base[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O/rnatracker"
+  $PY $TRAIN "${base[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O/dm3loc"
+  $PY $TRAIN "${base[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O/rnafm"
+  $PY $TRAIN "${base[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O/dnabert2"
+  $PY $TRAIN "${base[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O/fusion_rnafm_eng"
+}
+
+# ---------------------------------------------------------------------------
 # 消融 —— RNA-FM × {utr3,cds,full},同一批 cds 基因 + 同 split
 # ---------------------------------------------------------------------------
 ablation() {
@@ -188,37 +206,64 @@ ablation() {
 fine() {
   local C=(--label-scheme fine --label-agg soft --source-mask --classifier logistic
            --min-support 200 --seed 0 --ortholog-map "$ORTHO")
-  # 3'UTR fine(全部数据,gene)
+
+  # 3'UTR fine(全部数据,gene): UTR-BERT 在这里入场。
   local SP1="$SPLIT_DIR/split_fine_utr3_gene.csv" O1="$OUT/fine_utr3_gene"
   local b1=(--input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}"
             --native-region-sources "${NATIVE[@]}" "${C[@]}" --split-assignments "$SP1")
   $PY $TRAIN "${b1[@]}" --baseline kmer --kmer-k 4               --output-dir "$O1/kmer"
-  $PY $TRAIN "${b1[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O1/dm3loc"
+  $PY $TRAIN "${b1[@]}" --features length                         --output-dir "$O1/length"
+  $PY $TRAIN "${b1[@]}" --features engineered                     --output-dir "$O1/engineered"
+  $PY $TRAIN "${b1[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O1/rnatracker"
+  $PY $TRAIN "${b1[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O1/dm3loc"
+  $PY $TRAIN "${b1[@]}" --model-dir "$M_UTRBERT" --max-tokens 510  --output-dir "$O1/utrbert"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O1/rnafm"
   $PY $TRAIN "${b1[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O1/dnabert2"
   $PY $TRAIN "${b1[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
-       --max-tokens 1022 --output-dir "$O1/fusion"
+       --max-tokens 1022 --output-dir "$O1/fusion_rnafm_eng"
+
   # CDS fine(bulk,gene)— U2;cds 专属 codon 模型 mRNA-FM 在此入场(对齐二分类 track2)
   local SP2="$SPLIT_DIR/split_fine_cds_gene.csv" O2="$OUT/fine_cds_gene"
   local b2=(--input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}"
             "${C[@]}" --split-assignments "$SP2")
   $PY $TRAIN "${b2[@]}" --baseline kmer --kmer-k 4               --output-dir "$O2/kmer"
-  $PY $TRAIN "${b2[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O2/dm3loc"
+  $PY $TRAIN "${b2[@]}" --features length                         --output-dir "$O2/length"
+  $PY $TRAIN "${b2[@]}" --features engineered                     --output-dir "$O2/engineered"
+  $PY $TRAIN "${b2[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O2/rnatracker"
+  $PY $TRAIN "${b2[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O2/dm3loc"
   $PY $TRAIN "${b2[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O2/rnafm"
   $PY $TRAIN "${b2[@]}" --model-dir "$M_MRNAFM"  --max-tokens 1024 --output-dir "$O2/mrnafm"
   $PY $TRAIN "${b2[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O2/dnabert2"
   $PY $TRAIN "${b2[@]}" --fusion --features fm engineered --model-dir "$M_MRNAFM" \
-       --max-tokens 1024 --output-dir "$O2/fusion"
+       --max-tokens 1024 --output-dir "$O2/fusion_mrnafm_eng"
+
   # 全长 fine(bulk,gene)
   local SP3="$SPLIT_DIR/split_fine_full_gene.csv" O3="$OUT/fine_full_gene"
   local b3=(--input-dir "$INPUT_DIR" --region full --sample-level gene
             "${C[@]}" --split-assignments "$SP3")
   $PY $TRAIN "${b3[@]}" --baseline kmer --kmer-k 4               --output-dir "$O3/kmer"
-  $PY $TRAIN "${b3[@]}" --arch dm3loc --ts-max-len 31000         --output-dir "$O3/dm3loc"
+  $PY $TRAIN "${b3[@]}" --features length                         --output-dir "$O3/length"
+  $PY $TRAIN "${b3[@]}" --features engineered                     --output-dir "$O3/engineered"
+  $PY $TRAIN "${b3[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O3/rnatracker"
+  $PY $TRAIN "${b3[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O3/dm3loc"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O3/rnafm"
   $PY $TRAIN "${b3[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O3/dnabert2"
   $PY $TRAIN "${b3[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
-       --max-tokens 1022 --output-dir "$O3/fusion"
+       --max-tokens 1022 --output-dir "$O3/fusion_rnafm_eng"
+
+  # 全长 fine(isoform_sequence_union): 使用 fine isoform 自己的 split,供主表/CV/seed 统一引用。
+  local SP4="$SPLIT_DIR/split_fine_full_isoform.csv" O4="$OUT/fine_full_isoform"
+  local b4=(--input-dir "$INPUT_DIR" --region full --sample-level isoform_sequence_union
+            "${C[@]}" --split-assignments "$SP4")
+  $PY $TRAIN "${b4[@]}" --baseline kmer --kmer-k 4               --output-dir "$O4/kmer"
+  $PY $TRAIN "${b4[@]}" --features length                         --output-dir "$O4/length"
+  $PY $TRAIN "${b4[@]}" --features engineered                     --output-dir "$O4/engineered"
+  $PY $TRAIN "${b4[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O4/rnatracker"
+  $PY $TRAIN "${b4[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O4/dm3loc"
+  $PY $TRAIN "${b4[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O4/rnafm"
+  $PY $TRAIN "${b4[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O4/dnabert2"
+  $PY $TRAIN "${b4[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O4/fusion_rnafm_eng"
 }
 
 # ---------------------------------------------------------------------------
@@ -227,23 +272,31 @@ fine() {
 #   (它在 Track1B 是唯一显著超 k-mer 的);Track2 想试 codon 可把 M_RNAFM 换 M_MRNAFM。
 # ---------------------------------------------------------------------------
 fusion() {
-  local FB=(--fusion --features fm engineered --model-dir "$M_RNAFM")
   # 1A: 3'UTR gene
   $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}" \
     --native-region-sources "${NATIVE[@]}" "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U1_gene.csv" \
-    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track1a_gene/fusion"
+    --fusion --features fm engineered --model-dir "$M_RNAFM" \
+    --max-tokens 1022 --output-dir "$OUT/track1a_gene/fusion_rnafm_eng"
   # 1B: 3'UTR isoform (重点战场)
   $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level isoform_sequence_union --gtf "${GTF[@]}" \
     --native-region-sources "${NATIVE[@]}" "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U1_gene.csv" \
-    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track1b_isoform/fusion"
+    --fusion --features fm engineered --model-dir "$M_RNAFM" \
+    --max-tokens 1022 --output-dir "$OUT/track1b_isoform/fusion_rnafm_eng"
   # 2: CDS gene
   $PY $TRAIN --input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}" \
     "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U2_gene.csv" \
-    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track2_gene/fusion"
+    --fusion --features fm engineered --model-dir "$M_MRNAFM" \
+    --max-tokens 1024 --output-dir "$OUT/track2_gene/fusion_mrnafm_eng"
   # 3: full gene
   $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level gene \
     "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U3_gene.csv" \
-    "${FB[@]}" --max-tokens 1022 --output-dir "$OUT/track3_full/fusion"
+    --fusion --features fm engineered --model-dir "$M_RNAFM" \
+    --max-tokens 1022 --output-dir "$OUT/track3_full/fusion_rnafm_eng"
+  # 3B: full isoform
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level isoform_sequence_union \
+    "${COMMON[@]}" --split-assignments "$SPLIT_DIR/split_U3_gene.csv" \
+    --fusion --features fm engineered --model-dir "$M_RNAFM" \
+    --max-tokens 1022 --output-dir "$OUT/track3_full_isoform/fusion_rnafm_eng"
 }
 
 # ---------------------------------------------------------------------------
@@ -271,10 +324,11 @@ case "${1:-all}" in
   track1b)  track1b ;;
   track2)   track2 ;;
   track3)   track3 ;;
+  track3isoform) track3isoform ;;
   ablation) ablation ;;
   fine)     fine ;;
-  all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; ablation; fine ;;
-  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|ablation|fine|fusion|deploy|all]"; exit 1 ;;
+  all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; track3isoform; ablation; fine ;;
+  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fine|fusion|deploy|all]"; exit 1 ;;
 esac
 
 echo "DONE. 合并主表:  find $OUT -name overall_metrics.csv"
