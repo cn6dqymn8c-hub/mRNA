@@ -151,18 +151,26 @@ def draw_upset(axbar, axmat, axset, label="d"):
     axset.spines[["top", "right", "left"]].set_visible(False)
 
 
-# ============================ overview (3 panels) ===========================
-fig = plt.figure(figsize=(16, 5))
-gs = fig.add_gridspec(1, 3, wspace=0.34)
-draw_funnel(fig.add_subplot(gs[0]))
-draw_species_compartment(fig.add_subplot(gs[1]))
-draw_length(fig.add_subplot(gs[2]))
+# ============================ combined figure ===============================
+# Top row aligned to the UpSet's right-hand (intersection/matrix) column: a small
+# empty spacer on the left matches the UpSet set-size panel, so a/b/c sit above the
+# matrix and line up with it (and with each other).
+fig = plt.figure(figsize=(17, 13))
+outer = fig.add_gridspec(2, 1, height_ratios=[1, 1.5], hspace=0.30)
+top = outer[0].subgridspec(1, 4, width_ratios=[1.5, 4.2 / 3, 4.2 / 3, 4.2 / 3], wspace=0.34)
+draw_funnel(fig.add_subplot(top[1]))
+draw_species_compartment(fig.add_subplot(top[2]))
+draw_length(fig.add_subplot(top[3]))
+bot = outer[1].subgridspec(2, 2, width_ratios=[1.5, 4.2], height_ratios=[3, 2.2], hspace=0.06, wspace=0.05)
+axbar = fig.add_subplot(bot[0, 1]); axmat = fig.add_subplot(bot[1, 1], sharex=axbar)
+axset = fig.add_subplot(bot[1, 0], sharey=axmat)
+draw_upset(axbar, axmat, axset, label="d")
 fig.suptitle(f"Dataset overview — {N:,} unique isoform sequences "
              f"({sum(gene_sp_cnt.values()):,} genes; mouse/rat/human)", fontweight="bold", fontsize=13)
 for ext in ("png", "pdf"):
     fig.savefig(f"{OUT}/fig_dataset_overview.{ext}", dpi=200, bbox_inches="tight")
 plt.close(fig)
-print("wrote fig_dataset_overview (3-panel)")
+print("wrote fig_dataset_overview (combined)")
 
 # ============================ standalone UpSet ==============================
 fig2 = plt.figure(figsize=(15, 7))
