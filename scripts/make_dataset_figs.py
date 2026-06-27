@@ -12,6 +12,7 @@ across records sharing a sequence).
 """
 import csv, glob, os
 from collections import defaultdict, Counter
+from itertools import combinations
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -62,6 +63,14 @@ set_size = {l: sum(1 for s in seqs if l in seq_lab[s]) for l in LAB_ORDER}
 len_by_lab = {l: [seq_len[s] for s in seqs if l in seq_lab[s]] for l in LAB_ORDER}
 combo_cnt = Counter(frozenset(l for l in seq_lab[s] if l in idx) for s in seqs)
 combo_cnt.pop(frozenset(), None)
+co = np.zeros((len(LAB_ORDER), len(LAB_ORDER)))
+for s in seqs:
+    ls = [l for l in seq_lab[s] if l in idx]
+    for a in ls:
+        co[idx[a], idx[a]] += 1
+    for a, b in combinations(ls, 2):
+        co[idx[a], idx[b]] += 1
+        co[idx[b], idx[a]] += 1
 
 
 # ---- panel drawers ---------------------------------------------------------
@@ -99,10 +108,24 @@ def draw_length(ax):
         pc.set_facecolor(C_LAB); pc.set_alpha(0.6)
     ax.set_xticks(range(1, len(LAB_ORDER) + 1)); ax.set_xticklabels(LAB_ORDER, rotation=45, ha="right", fontsize=8)
     ax.set_ylabel("log10(sequence length)")
-    ax.set_title("c  Sequence length by compartment", loc="left", fontweight="bold")
+    ax.set_title("d  Sequence length by compartment", loc="left", fontweight="bold")
     ax.text(0.5, -0.42, "mixes full-length & 3'UTR-fragment sequences", transform=ax.transAxes,
             ha="center", va="top", fontsize=7, color="#666666", style="italic")
     ax.spines[["top", "right"]].set_visible(False)
+
+
+def draw_heatmap(ax):
+    disp = np.log10(co + 1)
+    im = ax.imshow(disp, cmap="magma_r", aspect="auto")   # fill the cell -> left-aligns with panel a
+    ax.set_xticks(range(len(LAB_ORDER))); ax.set_xticklabels(LAB_ORDER, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(len(LAB_ORDER))); ax.set_yticklabels(LAB_ORDER, fontsize=8)
+    for i in range(len(LAB_ORDER)):
+        for j in range(len(LAB_ORDER)):
+            ax.text(j, i, f"{int(co[i, j]):,}", ha="center", va="center", fontsize=6,
+                    color="white" if disp[i, j] > disp.max() * 0.55 else "black")
+    ax.set_title("c  Compartment co-occurrence (diagonal = total)", loc="left", fontweight="bold")
+    cb = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label("log10(seq+1)", fontsize=8)
 
 
 def draw_upset(axbar, axmat, axset, label="d"):
@@ -151,26 +174,21 @@ def draw_upset(axbar, axmat, axset, label="d"):
     axset.spines[["top", "right", "left"]].set_visible(False)
 
 
-# ============================ combined figure ===============================
-# Top row aligned to the UpSet's right-hand (intersection/matrix) column: a small
-# empty spacer on the left matches the UpSet set-size panel, so a/b/c sit above the
-# matrix and line up with it (and with each other).
-fig = plt.figure(figsize=(17, 13))
-outer = fig.add_gridspec(2, 1, height_ratios=[1, 1.5], hspace=0.30)
-top = outer[0].subgridspec(1, 4, width_ratios=[1.5, 4.2 / 3, 4.2 / 3, 4.2 / 3], wspace=0.34)
-draw_funnel(fig.add_subplot(top[1]))
-draw_species_compartment(fig.add_subplot(top[2]))
-draw_length(fig.add_subplot(top[3]))
-bot = outer[1].subgridspec(2, 2, width_ratios=[1.5, 4.2], height_ratios=[3, 2.2], hspace=0.06, wspace=0.05)
-axbar = fig.add_subplot(bot[0, 1]); axmat = fig.add_subplot(bot[1, 1], sharex=axbar)
-axset = fig.add_subplot(bot[1, 0], sharey=axmat)
-draw_upset(axbar, axmat, axset, label="d")
+# ============================ overview (2×2) ================================
+# a funnel | b compartment×species ; c co-occurrence heatmap | d length.
+# heatmap uses aspect='auto' so it fills the cell and left-aligns with (a) above.
+fig = plt.figure(figsize=(14, 11))
+gs = fig.add_gridspec(2, 2, hspace=0.45, wspace=0.30)
+draw_funnel(fig.add_subplot(gs[0, 0]))
+draw_species_compartment(fig.add_subplot(gs[0, 1]))
+draw_heatmap(fig.add_subplot(gs[1, 0]))
+draw_length(fig.add_subplot(gs[1, 1]))
 fig.suptitle(f"Dataset overview — {N:,} unique isoform sequences "
              f"({sum(gene_sp_cnt.values()):,} genes; mouse/rat/human)", fontweight="bold", fontsize=13)
 for ext in ("png", "pdf"):
     fig.savefig(f"{OUT}/fig_dataset_overview.{ext}", dpi=200, bbox_inches="tight")
 plt.close(fig)
-print("wrote fig_dataset_overview (combined)")
+print("wrote fig_dataset_overview (2x2)")
 
 # ============================ standalone UpSet ==============================
 fig2 = plt.figure(figsize=(15, 7))
