@@ -148,7 +148,12 @@ plt.close(fig)
 print("wrote fig_dataset_overview")
 
 # ============================ FIGURE 2: UpSet (complete 3-part) =============
-top = combo_cnt.most_common(16)
+TOPN = 20
+top = combo_cnt.most_common(TOPN)
+n_combo_total = len(combo_cnt)
+tot_seq = sum(combo_cnt.values())
+others_cnt = tot_seq - sum(c for _, c in top)
+others_n = n_combo_total - len(top)
 # set size = true total sequences per compartment (co-occurrence diagonal)
 set_size = {l: int(co[idx[l], idx[l]]) for l in LAB_ORDER}
 rows = [l for l, _ in sorted(set_size.items(), key=lambda kv: -kv[1]) if set_size[l] > 0]
@@ -162,13 +167,17 @@ axbar = fig2.add_subplot(gs2[0, 1])              # top-right: intersection sizes
 axmat = fig2.add_subplot(gs2[1, 1], sharex=axbar)  # bottom-right: dot matrix
 axset = fig2.add_subplot(gs2[1, 0], sharey=axmat)  # bottom-left: set sizes
 
-# --- intersection-size bars ---
-x = np.arange(len(top)); sizes = [c for _, c in top]
-axbar.bar(x, sizes, color="#3a7ca5", edgecolor="white")
+# --- intersection-size bars (top-N + aggregated 'others') ---
+sizes = [c for _, c in top] + [others_cnt]
+x = np.arange(len(sizes))
+colors = ["#3a7ca5"] * len(top) + ["#b0b0b0"]
+axbar.bar(x, sizes, color=colors, edgecolor="white")
 for xi, s in zip(x, sizes):
     axbar.text(xi, s + max(sizes) * 0.01, f"{s:,}", ha="center", va="bottom", fontsize=7)
 axbar.set_ylabel("sequences in combination")
-axbar.set_title("Compartment co-occurrence (UpSet) — top 16 combinations", loc="left", fontweight="bold")
+axbar.set_title(f"Compartment co-occurrence (UpSet) — top {len(top)} of {n_combo_total} combinations "
+                f"({sum(c for _, c in top) / tot_seq:.0%} of sequences; grey = other {others_n} combos)",
+                loc="left", fontweight="bold", fontsize=11)
 axbar.spines[["top", "right"]].set_visible(False); axbar.set_xticks([])
 
 # --- dot matrix ---
@@ -181,6 +190,9 @@ for xi, (combo, c) in enumerate(top):
         axmat.scatter([xi] * len(ys), ys, color="#222222", s=62, zorder=2)
         if len(ys) > 1:
             axmat.plot([xi, xi], [min(ys), max(ys)], color="#222222", lw=2, zorder=2)
+# 'others' column: all-grey (no specific pattern)
+ox = len(top)
+axmat.scatter([ox] * len(rows), [yof(l) for l in rows], color="#ececec", s=62, zorder=1)
 axmat.set_yticks(range(len(rows))); axmat.set_yticklabels([])
 axmat.set_xticks([]); axmat.set_ylim(-0.6, len(rows) - 0.4)
 axmat.spines[["top", "right", "bottom", "left"]].set_visible(False)
