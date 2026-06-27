@@ -27,6 +27,13 @@ import numpy as np
 
 _BASE2IDX = {"A": 0, "C": 1, "G": 2, "U": 3, "T": 3}
 
+# Floor for per-batch padding length. The conv/maxpool stacks downsample length
+# (RNATracker: two MaxPool1d(3) ≈ ÷9; DM3Loc: MaxPool1d(4)); a batch whose longest
+# sequence is only a few nt (tiny 3'UTRs / reporter fragments under --region utr3)
+# would otherwise pool down to length 0 and crash. Padding positions are ignored
+# by the valid-length mask, so this floor does not change any output.
+_MIN_CONV_LEN = 16
+
 
 def _one_hot(seq: str, max_len: int) -> np.ndarray:
     """(4, L) one-hot at the sequence's OWN length (capped at max_len; taken
@@ -183,7 +190,7 @@ def train_task_specific(
     def build_batch(jlist):
         mats = [_one_hot(seqs[j], max_len) for j in jlist]
         lens = np.array([m.shape[1] for m in mats], dtype=np.int64)
-        Lmax = int(lens.max())
+        Lmax = max(int(lens.max()), _MIN_CONV_LEN)   # floor so pooling never hits length 0
         xs = np.zeros((len(jlist), 4, Lmax), dtype=np.float32)
         for i, m in enumerate(mats):
             xs[i, :, : m.shape[1]] = m
