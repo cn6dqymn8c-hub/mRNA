@@ -161,7 +161,7 @@ rr = {l: i for i, l in enumerate(rows)}          # rr=0 -> largest set
 yof = lambda l: len(rows) - 1 - rr[l]            # largest set on top
 
 fig2 = plt.figure(figsize=(13, 6.8))
-gs2 = GridSpec(2, 2, width_ratios=[1, 4.2], height_ratios=[3, 2.2],
+gs2 = GridSpec(2, 2, width_ratios=[1.5, 4.2], height_ratios=[3, 2.2],
                hspace=0.06, wspace=0.05, figure=fig2)
 axbar = fig2.add_subplot(gs2[0, 1])              # top-right: intersection sizes
 axmat = fig2.add_subplot(gs2[1, 1], sharex=axbar)  # bottom-right: dot matrix
@@ -202,10 +202,10 @@ axmat.tick_params(left=False, labelleft=False)
 maxset = max(set_size.values())
 for l in rows:
     axset.barh(yof(l), set_size[l], color="#8d99ae", height=0.6)
-    axset.text(set_size[l] + maxset * 0.015, yof(l), f"{set_size[l]:,}",
+    axset.text(set_size[l] + maxset * 0.03, yof(l), f"{set_size[l]:,}",
                ha="right", va="center", fontsize=8, color="#333333")
 axset.invert_xaxis()
-axset.set_xlim(maxset * 1.22, 0)
+axset.set_xlim(maxset * 1.6, 0)
 axset.set_yticks(range(len(rows))); axset.set_yticklabels(rows[::-1], fontsize=9)
 axset.set_xlabel("set size (sequences)")
 axset.spines[["top", "right", "left"]].set_visible(False)
