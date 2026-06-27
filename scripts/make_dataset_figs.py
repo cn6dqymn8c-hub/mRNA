@@ -145,7 +145,7 @@ def draw_upset(axbar, axmat, axset, label="d"):
         axset.text(set_size[l] + maxset * 0.03, yof(l), f"{set_size[l]:,}",
                    ha="right", va="center", fontsize=8, color="#333333")
     axset.invert_xaxis(); axset.set_xlim(maxset * 1.6, 0)
-    axset.set_xticks([0, 10000, 20000]); axset.tick_params(axis="x", labelsize=8)
+    axset.set_xticks([0, 10000, 20000, 30000]); axset.tick_params(axis="x", labelsize=8)
     axset.set_yticks(range(len(rows))); axset.set_yticklabels(rows[::-1], fontsize=9)
     axset.set_xlabel("set size (sequences)")
     axset.spines[["top", "right", "left"]].set_visible(False)
