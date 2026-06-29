@@ -269,6 +269,47 @@ def fig_modelmap(summ, boot, metric, outdir):
     _save(fig, str(outdir / f"fig_fine_modelmap_{metric}"))
 
 
+def fig_vs_kmer_delta(summ, boot, metric, outdir):
+    """Headline negative-result figure: per setting, every model's macro Δ vs k-mer
+    (with group-bootstrap CI). Zero line = k-mer. Almost all models cluster at ~0;
+    only fusion clears it — the 'no single representation beats k-mer' story, visible
+    at a glance instead of buried in a heatmap's color."""
+    import matplotlib.pyplot as plt
+    if boot.empty:
+        print("  [skip] fig_fine_vs_kmer_delta: needs bootstrap (run without --no-bootstrap "
+              "or provide a cached fine_bootstrap.csv)")
+        return
+    sub = boot[(boot.group == "vs_kmer") & (boot.metric == metric)].copy()
+    if sub.empty:
+        return
+    sub["mc"] = sub.A.map(canon)
+    settings = [s for s in SETTINGS if s[0] in set(sub.setting)]
+    models = [m for m in CANON_ORDER if m != "kmer" and m in set(sub.mc)]
+    yof = {m: len(models) - 1 - i for i, m in enumerate(models)}
+    fig, axes = plt.subplots(1, len(settings), figsize=(3.4 * len(settings) + 1.2, 4.4),
+                             sharey=True, squeeze=False)
+    axes = axes[0]
+    for k, (sdir, region, gran, _) in enumerate(settings):
+        ax = axes[k]
+        d = sub[sub.setting == sdir]
+        for _, r in d.iterrows():
+            yi = yof[r.mc]
+            ax.errorbar(r["diff"], yi, xerr=[[r["diff"] - r.ci_lo], [r.ci_hi - r["diff"]]],
+                        fmt="o", color=_color(r.A), capsize=2.5, ms=5)
+            if r.significant and r["diff"] > 0:
+                ax.text(r.ci_hi, yi, " *", va="center", fontsize=10, fontweight="bold")
+        ax.axvline(0, color="black", lw=1)
+        ax.set_title(f"{region} {gran}", fontsize=10)
+        ax.set_xlabel(f"Δ macro-{metric.upper().replace('_', '-')}")
+        ax.grid(axis="x", ls=":", alpha=0.4)
+    axes[0].set_yticks(range(len(models)))
+    axes[0].set_yticklabels([MODEL_LABEL.get(m, m) for m in models][::-1])
+    fig.suptitle(f"Each model vs k-mer (Δ macro-{metric.upper().replace('_', '-')}, "
+                 f"group-bootstrap 95% CI; 0 = k-mer, * = significantly above)", fontsize=11)
+    fig.tight_layout()
+    _save(fig, str(outdir / f"fig_fine_vs_kmer_delta_{metric}"))
+
+
 def fig_region_ablation(results, boot, outdir):
     import matplotlib.pyplot as plt
     abase = results / ABL
@@ -554,11 +595,20 @@ def main():
             print(f"  best single FM in {sdir}: {bf} (val-selected)")
 
     boot = pd.DataFrame()
-    if not args.no_bootstrap:
+    boot_path = args.results_dir / "fine_bootstrap.csv"
+    if args.no_bootstrap:
+        if boot_path.exists():            # reuse cached bootstrap so figures still get CIs
+            boot = pd.read_csv(boot_path)
+            print(f"[bootstrap] --no-bootstrap: loaded cached {boot_path.name} "
+                  f"({len(boot)} comparisons)")
+        else:
+            print("[bootstrap] --no-bootstrap and no cached fine_bootstrap.csv; "
+                  "CI figures will be skipped")
+    else:
         print(f"[bootstrap] n_boot={args.n_boot} (group resampling by split_group) ...")
         boot = run_bootstraps(args.results_dir, summ, args.n_boot, args.seed)
         if not boot.empty:
-            boot.to_csv(args.results_dir / "fine_bootstrap.csv", index=False)
+            boot.to_csv(boot_path, index=False)
             print(f"  fine_bootstrap.csv ({len(boot)} comparisons)")
         else:
             print("  [bootstrap] no comparable runs (missing test_predictions.csv)")
@@ -575,6 +625,8 @@ def main():
     for fn in (
         lambda: fig_modelmap(summ, boot, "pr_auc", outdir),
         lambda: fig_modelmap(summ, boot, "roc_auc", outdir),
+        lambda: fig_vs_kmer_delta(summ, boot, "pr_auc", outdir),
+        lambda: fig_vs_kmer_delta(summ, boot, "roc_auc", outdir),
         lambda: fig_region_ablation(args.results_dir, boot, outdir),
         lambda: fig_granularity(summ, outdir),
         lambda: fig_fusion_forest(boot, outdir),
