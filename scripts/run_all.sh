@@ -200,6 +200,25 @@ ablation() {
 }
 
 # ---------------------------------------------------------------------------
+# fine 区域消融 —— RNA-FM × {utr3,cds,full},同一批 fine-CDS 基因 + 同 split。
+#   §3.2 区域比较的"可比"版本:--restrict-to-split 让三臂只保留 fine-CDS 基因
+#   (cds⊆utr3⊆full),同基因、同 split、只变区域 → 区域差异才是唯一变量。
+#   依赖 make_fine_splits 先产 split_fine_cds_gene.csv。
+# ---------------------------------------------------------------------------
+fineablation() {
+  local FC=(--label-scheme fine --label-agg soft --source-mask --classifier logistic
+            --min-support 200 --seed 0 --ortholog-map "$ORTHO" "${SPECIES[@]}")
+  local SP="$SPLIT_DIR/split_fine_cds_gene.csv"
+  for R in utr3 cds full; do
+    local extra=(); [ "$R" != "full" ] && extra=(--gtf "${GTF[@]}")
+    local nat=(); [ "$R" = "utr3" ] && nat=(--native-region-sources "${NATIVE[@]}")
+    $PY $TRAIN --input-dir "$INPUT_DIR" --region "$R" --sample-level gene \
+      "${extra[@]}" "${nat[@]}" "${FC[@]}" --split-assignments "$SP" --restrict-to-split \
+      --model-dir "$M_RNAFM" --max-tokens 1022 --output-dir "$OUT/fine_ablation_region/rnafm_$R"
+  done
+}
+
+# ---------------------------------------------------------------------------
 # fine —— 5 隔室多标签(Cell_body/Dendrite/Neuropil/Axon/Neurite),关键 track 各一遍
 #   多标签必须 --label-scheme fine --source-mask;min-support 提到 200
 # ---------------------------------------------------------------------------
@@ -326,9 +345,11 @@ case "${1:-all}" in
   track3)   track3 ;;
   track3isoform) track3isoform ;;
   ablation) ablation ;;
+  fineablation) fineablation ;;
   fine)     fine ;;
-  all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; track3isoform; ablation; fine ;;
-  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fine|fusion|deploy|all]"; exit 1 ;;
+  fineonly) make_fine_splits; fine; fineablation ;;
+  all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; track3isoform; ablation; fine; fineablation ;;
+  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fineablation|fine|fineonly|fusion|deploy|all]"; exit 1 ;;
 esac
 
 echo "DONE. 合并主表:  find $OUT -name overall_metrics.csv"
