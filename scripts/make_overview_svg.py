@@ -75,7 +75,7 @@ text(W/2, 36, "Hybrid multi-view architecture for neuronal mRNA localization pre
 # A
 panel(24, 56, 690, 300, "A   Curated atlas & leakage-safe partitioning")
 whitebox(44, 92, 380, 60, "Curated neuronal mRNA localization atlas\nsequence · source · species · gene · transcript · label", size=11)
-whitebox(44, 168, 182, 70, "18 published sources · mouse / rat / human\nRNA-seq · Ribo-seq · MPRA · 3'-seq", size=10.5)
+whitebox(44, 168, 182, 70, "17 published sources · mouse / rat / human\nRNA-seq · Ribo-seq · MPRA · 3'-seq", size=10.5)
 whitebox(238, 168, 186, 70, "Annotation schema\nmultilabel · soft (continuous) labels\n+ per-sample source mask", size=10.5)
 box(452, 96, 240, 40, "Train  70%   (ortholog groups A, C, E …)", "eng", 12)
 box(452, 146, 240, 40, "Validation  15%   (groups B, F …)", "fus", 12)
@@ -84,9 +84,9 @@ whitebox(44, 256, 648, 56, "Leakage-safe grouping:  ortholog group · gene · id
 
 # B
 panel(742, 56, 714, 300, "B   Label / sequence preprocessing")
-steps = ["Synap →\nNeuropil", "Label\nharmoniz.", "Region extract\nfull / CDS / 3'UTR", "Windowing /\nsegmentation", "Pad /\ntruncate", "Standardize\n(z-score)"]
+steps = ["Label\nharmonization", "Region extract\nfull / CDS / 3'UTR", "Windowing /\nsegmentation", "Pad /\ntruncate", "Standardize\n(z-score)"]
 for i, st in enumerate(steps):
-    x = 762 + i*112
+    x = 762 + i*132
     whitebox(x, 92, 100, 66, st, size=10.3)
     if i: arrow(x-12, 125, x-2, 125)
 whitebox(762, 184, 320, 60, "Leakage-safe safeguards\nunknown ≠ negative · ortholog groups", size=10.8)
@@ -101,7 +101,7 @@ panel(24, 376, 1432, 300, "C   Multi-view encoding — three complementary persp
 box(44, 410, 440, 250, "", "fm")
 text(264, 432, "Foundation-model view", 14, "700", GRAD["fm"][2])
 whitebox(60, 470, 120, 64, "Sliding windows\n→ tokenizer", "fm", 10.5)
-whitebox(196, 470, 150, 64, "Pretrained encoder\nRNA-FM / mRNA-FM\n/ DNABERT-2", "fm", 10)
+whitebox(196, 470, 150, 64, "Pretrained encoder\nRNA-FM / mRNA-FM /\nUTR-BERT / DNABERT-2", "fm", 9.6)
 whitebox(360, 470, 108, 64, "mean / attn\npooling", "fm", 10.5)
 whitebox(150, 576, 230, 50, "z_FM   (frozen embedding, d_FM)", "fm", 12)
 # Eng
