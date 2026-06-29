@@ -1005,6 +1005,17 @@ def finetune_model(
 
     win_lists = [windows_for(seqs[j]) for j in range(len(seqs))]
 
+    # (3) pre-tokenize every window ONCE (the per-epoch CPU bottleneck). Datasets
+    # index into these cached token-id lists; collate only pads (cheap, no re-tok).
+    _win_text, _win_ids_of = [], {}
+    for _j in np.unique(np.concatenate([tr_idx, va_idx, te_idx])):
+        gids = []
+        for w in win_lists[int(_j)]:
+            gids.append(len(_win_text)); _win_text.append(w)
+        _win_ids_of[int(_j)] = gids
+    print(f"[finetune] pre-tokenizing {len(_win_text)} windows ...", flush=True)
+    _cached_ids = tok(_win_text, padding=False, truncation=True, max_length=max_tok + 2)["input_ids"]
+
     used = np.unique(np.concatenate([tr_idx, va_idx, te_idx]))
     nwin = np.array([len(win_lists[j]) for j in used], dtype=int)
     if policy == "truncate":
@@ -1027,6 +1038,48 @@ def finetune_model(
 
     head = nn.Linear(base.config.hidden_size, nC).to(device)
     base = base.to(device)
+
+    # (2) gradient checkpointing — trade compute for activation memory.
+    if getattr(args, "ft_grad_checkpoint", True):
+        try:
+            base.gradient_checkpointing_enable()
+            if hasattr(base, "config"):
+                base.config.use_cache = False
+            print("[finetune] gradient checkpointing: ON", flush=True)
+        except Exception as e:
+            print(f"[finetune] gradient checkpointing unavailable ({e})", flush=True)
+
+    # (1) parameter-efficient fine-tune: optionally freeze the base except its top
+    # N transformer blocks. Architecture-agnostic: pick the largest nn.ModuleList
+    # (the transformer block stack) and unfreeze its last N.
+    def _unfreeze_top(mod, n_top):
+        for p in mod.parameters():
+            p.requires_grad_(False)
+        if n_top <= 0:
+            for p in mod.parameters():
+                p.requires_grad_(True)
+            return "full (all base params)"
+        blocks = None
+        for nm, sub in mod.named_modules():
+            if isinstance(sub, nn.ModuleList) and len(sub) >= 2:
+                if blocks is None or len(sub) > len(blocks[1]):
+                    blocks = (nm, sub)
+        if blocks is None:
+            for p in mod.parameters():
+                p.requires_grad_(True)
+            return "full (no block-list found)"
+        bnm, layers = blocks
+        for layer in list(layers)[-n_top:]:
+            for p in layer.parameters():
+                p.requires_grad_(True)
+        return f"top {min(n_top, len(layers))}/{len(layers)} blocks of '{bnm}'"
+
+    frozen_desc = _unfreeze_top(base, int(getattr(args, "ft_unfreeze_top", 0)))
+    n_train_p = sum(p.numel() for p in base.parameters() if p.requires_grad)
+    n_all_p = sum(p.numel() for p in base.parameters())
+    print(f"[finetune] trainable base: {frozen_desc} "
+          f"({n_train_p/1e6:.1f}M / {n_all_p/1e6:.1f}M params)", flush=True)
+
     known_train = label_mask[tr_idx].sum(axis=0)
     pos = (Y[tr_idx] * label_mask[tr_idx]).sum(axis=0)
     neg = known_train - pos
@@ -1041,11 +1094,11 @@ def finetune_model(
             elif pos[j] == known_train[j]:
                 head.weight[j].zero_(); head.bias[j].fill_(10.0)
 
-    opt = torch.optim.AdamW(
-        list(base.parameters()) + list(head.parameters()), lr=args.ft_lr, weight_decay=0.01,
-    )
+    trainable = [p for p in base.parameters() if p.requires_grad] + list(head.parameters())
+    opt = torch.optim.AdamW(trainable, lr=args.ft_lr, weight_decay=0.01)
     use_amp = str(device).startswith("cuda")
     grad_scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    _ft_nw = max(0, int(getattr(args, "ft_num_workers", 2)))   # (4) DataLoader workers
 
     def _token_mean(hidden, attention_mask):
         att = attention_mask.unsqueeze(-1).float()
@@ -1059,29 +1112,29 @@ def finetune_model(
         def __init__(self, indices):
             self.items = []
             for j in indices:
-                wl = win_lists[j]
-                for w in wl:
-                    self.items.append((int(j), w, len(wl)))
+                gids = _win_ids_of[int(j)]
+                for gid in gids:
+                    self.items.append((int(j), gid, len(gids)))
 
         def __len__(self):
             return len(self.items)
 
         def __getitem__(self, i):
-            j, w, n = self.items[i]
-            return w, Y[j], sample_weight[j], label_mask[j], 1.0 / n, j
+            j, gid, n = self.items[i]
+            return _cached_ids[gid], Y[j], sample_weight[j], label_mask[j], 1.0 / n, j
 
     def collate_window(batch):
-        xs = [b[0] for b in batch]
+        enc = tok.pad({"input_ids": [b[0] for b in batch]}, return_tensors="pt")
         ys = torch.tensor(np.stack([b[1] for b in batch]), dtype=torch.float32)
         ws = torch.tensor(np.stack([b[2] for b in batch]), dtype=torch.float32)
         ms = torch.tensor(np.stack([b[3] for b in batch]), dtype=torch.float32)
         norm = torch.tensor([b[4] for b in batch], dtype=torch.float32)
         owners = [b[5] for b in batch]
-        enc = tok(xs, return_tensors="pt", padding=True, truncation=True, max_length=max_tok + 2)
         return enc, ys, ws, ms, norm, owners
 
     def run_window(indices, train):
-        dl = DataLoader(WindowDS(indices), batch_size=args.ft_batch, shuffle=train, collate_fn=collate_window)
+        dl = DataLoader(WindowDS(indices), batch_size=args.ft_batch, shuffle=train,
+                        collate_fn=collate_window, num_workers=_ft_nw, pin_memory=use_amp)
         base.train(train); head.train(train)
         pos_of = {int(j): p for p, j in enumerate(indices)}
         sum_logits = np.zeros((len(indices), nC), dtype=np.float64)
@@ -1120,23 +1173,24 @@ def finetune_model(
 
         def __getitem__(self, i):
             j = self.indices[i]
-            return win_lists[j], Y[j], sample_weight[j], label_mask[j], j
+            return [_cached_ids[g] for g in _win_ids_of[j]], Y[j], sample_weight[j], label_mask[j], j
 
     def collate_tx(batch):
-        xs, seg = [], []
+        ids, seg = [], []
         for bi, b in enumerate(batch):
-            for w in b[0]:
-                xs.append(w)
+            for wid in b[0]:
+                ids.append(wid)
                 seg.append(bi)
+        enc = tok.pad({"input_ids": ids}, return_tensors="pt")
         ys = torch.tensor(np.stack([b[1] for b in batch]), dtype=torch.float32)
         ws = torch.tensor(np.stack([b[2] for b in batch]), dtype=torch.float32)
         ms = torch.tensor(np.stack([b[3] for b in batch]), dtype=torch.float32)
         owners = [b[4] for b in batch]
-        enc = tok(xs, return_tensors="pt", padding=True, truncation=True, max_length=max_tok + 2)
         return enc, ys, ws, ms, torch.tensor(seg, dtype=torch.long), owners
 
     def run_pooled(indices, train):
-        dl = DataLoader(TxDS(indices), batch_size=args.ft_batch, shuffle=train, collate_fn=collate_tx)
+        dl = DataLoader(TxDS(indices), batch_size=args.ft_batch, shuffle=train,
+                        collate_fn=collate_tx, num_workers=_ft_nw, pin_memory=use_amp)
         base.train(train); head.train(train)
         logits_chunks, owners_all = [], []
 
@@ -1589,6 +1643,15 @@ def main():
     ap.add_argument("--ft-long-seq-policy", choices=["truncate", "sliding_mean", "pooled_repr"],
                     default="truncate",
                     help="fine-tune long-seq handling: truncate / sliding_mean / pooled_repr.")
+    ap.add_argument("--ft-unfreeze-top", type=int, default=0,
+                    help="parameter-efficient fine-tune: 0 = full (all base params); N>0 = "
+                    "freeze the base except its top N transformer blocks (+ head). Big memory/speed win.")
+    ap.add_argument("--ft-grad-checkpoint", action="store_true", default=True,
+                    help="enable gradient checkpointing on the base (default on; trades compute for memory).")
+    ap.add_argument("--no-ft-grad-checkpoint", dest="ft_grad_checkpoint", action="store_false",
+                    help="disable gradient checkpointing.")
+    ap.add_argument("--ft-num-workers", type=int, default=2,
+                    help="DataLoader workers for fine-tune (windows are pre-tokenized once; workers only pad).")
     ap.add_argument("--pool", choices=["mean", "cls"], default="mean")
     ap.add_argument("--window-pool", choices=["mean", "max"], default="mean")
     ap.add_argument("--max-tokens", type=int, default=1024)
