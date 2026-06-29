@@ -107,6 +107,20 @@ def structure_features(seqs, fold_cap: int = 600):
     return mfe, ["mfe", "mfe_per_nt"]
 
 
+def block_feature_names(name, kmer_k=4):
+    """Column names for a --features block, WITHOUT computing it (for interpretability
+    / permutation importance). Mirrors build_feature_block's column order exactly."""
+    if name == "length":
+        return ["len", "log_len"]
+    if name == "engineered":
+        return ["len", "log_len", "gc"] + [f"di_{d}" for d in _DINUC] + [f"mot_{k}" for k in _MOTIFS]
+    if name == "structure":
+        return ["mfe", "mfe_per_nt"]
+    if name == "kmer":
+        return ["".join(p) for p in product("ACGU", repeat=kmer_k)]
+    raise SystemExit(f"[error] unknown --features block: {name}")
+
+
 def build_feature_block(name, seqs, kmer_k=4):
     """Return (matrix, tag) for a non-FM --features block. FM is handled by the
     caller (it needs the model + cache)."""

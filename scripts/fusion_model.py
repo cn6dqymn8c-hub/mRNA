@@ -236,6 +236,89 @@ def train_fusion(blocks, Y, classes, tr_idx, va_idx, te_idx, args,
         )
         print(f"[fusion] saved deployable ensemble artifact ({len(states)} members) -> "
               f"{out_dir}/fusion_model.joblib")
+
+    # ---- permutation importance of engineered features (interpretability) ----
+    # Faithful to the trained model: shuffle a feature across TEST rows and measure
+    # the drop in macro-AUPRC/AUROC. Only interpretable views (named, small) get
+    # per-column importance; large/uninterpretable views (FM embedding, k-mer) get a
+    # single aggregate "whole-view" permutation for comparison. Direction = sign of
+    # the feature's standardized positive-minus-negative mean (descriptive).
+    feat_names = getattr(args, "fusion_feature_names", None)
+    if (out_dir is not None and feat_names is not None
+            and not getattr(args, "train_on_all", False)):
+        import pandas as pd
+        from sklearn.metrics import average_precision_score, roc_auc_score
+        te_arr = np.asarray(te_list)
+        n_rep = int(getattr(args, "fusion_perm_repeats", 5))
+        rng = np.random.default_rng(base_seed)
+
+        def predict_te(mod):
+            probs = []
+            for st in states:
+                m = _build_fusion(block_dims, nC, hidden=h, dropout=d).to(device)
+                m.load_state_dict(st); m.eval()
+                out = np.zeros((len(te_list), nC), dtype=np.float32)
+                with _t.no_grad():
+                    for b in range(0, len(te_list), batch):
+                        js = te_list[b:b + batch]
+                        xs = [_t.tensor(np.stack([mod[v][j] for j in js])).to(device)
+                              for v in range(len(mod))]
+                        out[b:b + len(js)] = m(xs).cpu().numpy()
+                probs.append(1.0 / (1.0 + np.exp(-out)))
+            return np.mean(probs, axis=0)
+
+        def macro(prob):
+            rs, ps = [], []
+            for j in range(nC):
+                v = label_mask[te_idx, j].astype(bool)
+                yt = Y[te_idx, j][v]
+                if 0 < yt.sum() < len(yt):
+                    ps.append(average_precision_score(yt, prob[v, j]))
+                    rs.append(roc_auc_score(yt, prob[v, j]))
+            return (float(np.mean(ps)) if ps else np.nan,
+                    float(np.mean(rs)) if rs else np.nan)
+
+        def direction(vi, c):
+            col = blocks_s[vi][te_arr, c]
+            diffs = []
+            for j in range(nC):
+                v = label_mask[te_idx, j].astype(bool)
+                yt = Y[te_idx, j][v]; cc = col[v]
+                if 0 < yt.sum() < len(yt):
+                    diffs.append(cc[yt == 1].mean() - cc[yt == 0].mean())
+            return float(np.mean(diffs)) if diffs else 0.0
+
+        def perm_drop(vi, cols):
+            base_pr, base_roc = macro(predict_te(blocks_s))
+            dpr, droc = [], []
+            for _ in range(n_rep):
+                mod = list(blocks_s)
+                mv = blocks_s[vi].copy()
+                perm = rng.permutation(len(te_arr))
+                for c in cols:
+                    mv[te_arr, c] = blocks_s[vi][te_arr[perm], c]
+                mod[vi] = mv
+                pr, roc = macro(predict_te(mod))
+                dpr.append(base_pr - pr); droc.append(base_roc - roc)
+            return float(np.mean(dpr)), float(np.mean(droc))
+
+        rows = []
+        for vi, tag in enumerate(view_tags):
+            names = feat_names[vi] if vi < len(feat_names) else None
+            if names is not None and len(names) <= 64:
+                for c, fn in enumerate(names):
+                    dpr, droc = perm_drop(vi, [c])
+                    rows.append({"view": tag, "feature": fn, "drop_pr_auc": dpr,
+                                 "drop_roc_auc": droc, "direction": direction(vi, c)})
+            else:  # FM / k-mer: one aggregate whole-view permutation
+                dpr, droc = perm_drop(vi, list(range(block_dims[vi])))
+                rows.append({"view": tag, "feature": f"{tag} (whole view)",
+                             "drop_pr_auc": dpr, "drop_roc_auc": droc, "direction": np.nan})
+        imp = pd.DataFrame(rows).sort_values("drop_pr_auc", ascending=False)
+        imp.to_csv(os.path.join(str(out_dir), "feature_importance.csv"), index=False)
+        print(f"[fusion] saved permutation importance ({len(imp)} features) -> "
+              f"{out_dir}/feature_importance.csv")
+
     return va_prob, te_prob
 
 

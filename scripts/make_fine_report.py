@@ -549,6 +549,42 @@ def fig_percompartment_gain(boot, outdir):
     _save(fig, str(outdir / "fig_fine_percompartment_gain"))
 
 
+def fig_feature_importance(results, outdir, topk=15):
+    """Permutation importance of engineered features in the main-benchmark fusion model
+    (drop in macro-AUPRC when a feature is shuffled across test rows). Bars colored by
+    direction (enriched vs depleted in positives); the whole FM view is shown for scale.
+    This is the faithful, on-task interpretability figure — magnitude is the model's
+    measured reliance, direction is a descriptive feature-label association."""
+    import matplotlib.pyplot as plt
+    fus = next((s[3] for s in SETTINGS if s[0] == MAIN), "fusion_rnafm_eng")
+    p = results / MAIN / fus / "feature_importance.csv"
+    if not p.exists():
+        print("  [skip] fig_fine_feature_importance: no feature_importance.csv "
+              "(run fusion with permutation importance enabled)")
+        return
+    imp = pd.read_csv(p).sort_values("drop_pr_auc", ascending=False).head(topk).iloc[::-1]
+    if imp.empty:
+        return
+    colors = []
+    for _, r in imp.iterrows():
+        if pd.isna(r["direction"]):
+            colors.append(C_KMER)                      # whole-view aggregate (FM/k-mer)
+        else:
+            colors.append(C_FUS if r["direction"] > 0 else C_FM)
+    fig, ax = plt.subplots(figsize=(7.5, max(4, 0.42 * len(imp) + 1)))
+    y = np.arange(len(imp))
+    ax.barh(y, imp["drop_pr_auc"], color=colors, edgecolor="black", linewidth=0.3)
+    ax.axvline(0, color="black", lw=0.8)
+    ax.set_yticks(y); ax.set_yticklabels(imp["feature"], fontsize=8)
+    ax.set_xlabel("Δ macro-AUPRC when permuted  (importance)")
+    ax.set_title(f"Engineered-feature permutation importance — {MAIN} fusion")
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in (C_FUS, C_FM, C_KMER)]
+    ax.legend(handles, ["enriched in positives (+)", "depleted in positives (−)",
+                        "whole view (FM/k-mer)"], fontsize=7.5, loc="lower right")
+    fig.tight_layout()
+    _save(fig, str(outdir / "fig_fine_feature_importance"))
+
+
 def fig_perspecies(results, outdir):
     import matplotlib.pyplot as plt
     fus = next((s[3] for s in SETTINGS if s[0] == MAIN), "fusion_rnafm_eng")
@@ -635,6 +671,7 @@ def main():
         lambda: fig_percompartment(per, outdir),
         lambda: fig_support_vs_perf(per, outdir),
         lambda: fig_percompartment_gain(boot, outdir),
+        lambda: fig_feature_importance(args.results_dir, outdir),
         lambda: fig_perspecies(args.results_dir, outdir),
     ):
         try:

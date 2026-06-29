@@ -1794,9 +1794,9 @@ def main():
     elif args.features:
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from engineered_features import build_feature_block
+        from engineered_features import build_feature_block, block_feature_names
         seqs_all = genes["sequence"].tolist()
-        blocks, tags = [], []
+        blocks, tags, view_names = [], [], []
         for fblk in args.features:
             if fblk == "fm":
                 model_tag = os.path.basename(os.path.normpath(args.model_dir))
@@ -1805,11 +1805,15 @@ def main():
                 args.emb_cache_dir.mkdir(parents=True, exist_ok=True)
                 blocks.append(get_embeddings(genes, args, args.emb_cache_dir / f"emb_{emb_sig}.npy"))
                 tags.append(model_tag)
+                view_names.append(None)   # FM dims are not individually interpretable
             else:
                 X, tag = build_feature_block(fblk, seqs_all, kmer_k=args.kmer_k)
                 blocks.append(X.astype(np.float32))
                 tags.append(tag)
+                view_names.append(block_feature_names(fblk, kmer_k=args.kmer_k))
         feature_blocks_full = [b.astype(np.float32) for b in blocks]
+        # per-view column names (for fusion permutation importance); None = aggregate-only
+        args.fusion_feature_names = view_names
         emb_full = None if args.fusion else np.concatenate(blocks, axis=1).astype(np.float32)
         feat_tag = "+".join(tags)
         if args.fusion:
