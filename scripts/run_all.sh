@@ -285,6 +285,103 @@ fine() {
        --max-tokens 1022 --output-dir "$O4/fusion_rnafm_eng"
 }
 
+# ===========================================================================
+# 主结果:coarse 非互斥 2 标签 {in_soma, in_neurite}（可同时阳性）
+#   --label-scheme soma_neurite_multilabel；与 fine 同框架，只是粒度更粗、非互斥。
+#   独立 split（标签不同，删行不同），4 个设置 + 区域消融，结构同 fine。
+# ===========================================================================
+make_coarse_splits() {
+  local FC=(--label-scheme soma_neurite_multilabel --label-agg soft --source-mask --classifier logistic
+            --min-support 200 --seed 0 --ortholog-map "$ORTHO" "${SPECIES[@]}" --baseline kmer)
+  echo "### split coarse-utr3-gene"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}" \
+    --native-region-sources "${NATIVE[@]}" "${FC[@]}" --output-dir "$SPLIT_DIR/coarseU1_gene"
+  cp "$SPLIT_DIR/coarseU1_gene/split_assignments.csv" "$SPLIT_DIR/split_coarse_utr3_gene.csv"
+  echo "### split coarse-cds-gene"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}" \
+    "${FC[@]}" --output-dir "$SPLIT_DIR/coarseU2_gene"
+  cp "$SPLIT_DIR/coarseU2_gene/split_assignments.csv" "$SPLIT_DIR/split_coarse_cds_gene.csv"
+  echo "### split coarse-full-gene"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level gene \
+    "${FC[@]}" --output-dir "$SPLIT_DIR/coarseU3_gene"
+  cp "$SPLIT_DIR/coarseU3_gene/split_assignments.csv" "$SPLIT_DIR/split_coarse_full_gene.csv"
+  echo "### split coarse-full-isoform (主 benchmark)"
+  $PY $TRAIN --input-dir "$INPUT_DIR" --region full --sample-level isoform_sequence_union \
+    "${FC[@]}" --output-dir "$SPLIT_DIR/coarseU3_isoform"
+  cp "$SPLIT_DIR/coarseU3_isoform/split_assignments.csv" "$SPLIT_DIR/split_coarse_full_isoform.csv"
+}
+
+coarse() {
+  local C=(--label-scheme soma_neurite_multilabel --label-agg soft --source-mask --classifier logistic
+           --min-support 200 --seed 0 --ortholog-map "$ORTHO" "${SPECIES[@]}")
+
+  local SP1="$SPLIT_DIR/split_coarse_utr3_gene.csv" O1="$OUT/coarse_utr3_gene"
+  local b1=(--input-dir "$INPUT_DIR" --region utr3 --sample-level gene --gtf "${GTF[@]}"
+            --native-region-sources "${NATIVE[@]}" "${C[@]}" --split-assignments "$SP1")
+  $PY $TRAIN "${b1[@]}" --baseline kmer --kmer-k 4               --output-dir "$O1/kmer"
+  $PY $TRAIN "${b1[@]}" --features length                         --output-dir "$O1/length"
+  $PY $TRAIN "${b1[@]}" --features engineered                     --output-dir "$O1/engineered"
+  $PY $TRAIN "${b1[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O1/rnatracker"
+  $PY $TRAIN "${b1[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O1/dm3loc"
+  $PY $TRAIN "${b1[@]}" --model-dir "$M_UTRBERT" --max-tokens 510  --output-dir "$O1/utrbert"
+  $PY $TRAIN "${b1[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O1/rnafm"
+  $PY $TRAIN "${b1[@]}" --model-dir "$M_DNABERT" --max-tokens 2000 --output-dir "$O1/dnabert2"
+  $PY $TRAIN "${b1[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O1/fusion_rnafm_eng"
+
+  local SP2="$SPLIT_DIR/split_coarse_cds_gene.csv" O2="$OUT/coarse_cds_gene"
+  local b2=(--input-dir "$INPUT_DIR" --region cds --sample-level gene --gtf "${GTF[@]}"
+            "${C[@]}" --split-assignments "$SP2")
+  $PY $TRAIN "${b2[@]}" --baseline kmer --kmer-k 4               --output-dir "$O2/kmer"
+  $PY $TRAIN "${b2[@]}" --features length                         --output-dir "$O2/length"
+  $PY $TRAIN "${b2[@]}" --features engineered                     --output-dir "$O2/engineered"
+  $PY $TRAIN "${b2[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O2/rnatracker"
+  $PY $TRAIN "${b2[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O2/dm3loc"
+  $PY $TRAIN "${b2[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O2/rnafm"
+  $PY $TRAIN "${b2[@]}" --model-dir "$M_MRNAFM"  --max-tokens 1024 --output-dir "$O2/mrnafm"
+  $PY $TRAIN "${b2[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O2/dnabert2"
+  $PY $TRAIN "${b2[@]}" --fusion --features fm engineered --model-dir "$M_MRNAFM" \
+       --max-tokens 1024 --output-dir "$O2/fusion_mrnafm_eng"
+
+  local SP3="$SPLIT_DIR/split_coarse_full_gene.csv" O3="$OUT/coarse_full_gene"
+  local b3=(--input-dir "$INPUT_DIR" --region full --sample-level gene "${C[@]}" --split-assignments "$SP3")
+  $PY $TRAIN "${b3[@]}" --baseline kmer --kmer-k 4               --output-dir "$O3/kmer"
+  $PY $TRAIN "${b3[@]}" --features length                         --output-dir "$O3/length"
+  $PY $TRAIN "${b3[@]}" --features engineered                     --output-dir "$O3/engineered"
+  $PY $TRAIN "${b3[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O3/rnatracker"
+  $PY $TRAIN "${b3[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O3/dm3loc"
+  $PY $TRAIN "${b3[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O3/rnafm"
+  $PY $TRAIN "${b3[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O3/dnabert2"
+  $PY $TRAIN "${b3[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O3/fusion_rnafm_eng"
+
+  local SP4="$SPLIT_DIR/split_coarse_full_isoform.csv" O4="$OUT/coarse_full_isoform"
+  local b4=(--input-dir "$INPUT_DIR" --region full --sample-level isoform_sequence_union
+            "${C[@]}" --split-assignments "$SP4")
+  $PY $TRAIN "${b4[@]}" --baseline kmer --kmer-k 4               --output-dir "$O4/kmer"
+  $PY $TRAIN "${b4[@]}" --features length                         --output-dir "$O4/length"
+  $PY $TRAIN "${b4[@]}" --features engineered                     --output-dir "$O4/engineered"
+  $PY $TRAIN "${b4[@]}" --arch rnatracker --ts-max-len 31000      --output-dir "$O4/rnatracker"
+  $PY $TRAIN "${b4[@]}" --arch dm3loc     --ts-max-len 31000      --output-dir "$O4/dm3loc"
+  $PY $TRAIN "${b4[@]}" --model-dir "$M_RNAFM"   --max-tokens 1022 --output-dir "$O4/rnafm"
+  $PY $TRAIN "${b4[@]}" --model-dir "$M_DNABERT" --max-tokens 3000 --output-dir "$O4/dnabert2"
+  $PY $TRAIN "${b4[@]}" --fusion --features fm engineered --model-dir "$M_RNAFM" \
+       --max-tokens 1022 --output-dir "$O4/fusion_rnafm_eng"
+}
+
+coarseablation() {
+  local FC=(--label-scheme soma_neurite_multilabel --label-agg soft --source-mask --classifier logistic
+            --min-support 200 --seed 0 --ortholog-map "$ORTHO" "${SPECIES[@]}")
+  local SP="$SPLIT_DIR/split_coarse_cds_gene.csv"
+  for R in utr3 cds full; do
+    local extra=(); [ "$R" != "full" ] && extra=(--gtf "${GTF[@]}")
+    local nat=(); [ "$R" = "utr3" ] && nat=(--native-region-sources "${NATIVE[@]}")
+    $PY $TRAIN --input-dir "$INPUT_DIR" --region "$R" --sample-level gene \
+      "${extra[@]}" "${nat[@]}" "${FC[@]}" --split-assignments "$SP" --restrict-to-split \
+      --model-dir "$M_RNAFM" --max-tokens 1022 --output-dir "$OUT/coarse_ablation_region/rnafm_$R"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # fusion —— 提出模型:RNA-FM 嵌入 ⊕ 工程特征,注意力融合头。每个 track 跑一个,
 #   之后用 bootstrap 比 fusion vs kmer,看能否成为"显著最优"。FM 块用 RNA-FM
@@ -367,8 +464,12 @@ case "${1:-all}" in
   fineablation) fineablation ;;
   fine)     fine ;;
   fineonly) make_fine_splits; fine; fineablation ;;
+  coarsesplits) make_coarse_splits ;;
+  coarse)   coarse ;;
+  coarseablation) coarseablation ;;
+  coarseonly) make_coarse_splits; coarse; coarseablation ;;
   all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; track3isoform; ablation; fine; fineablation ;;
-  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fineablation|fine|fineonly|fusion|deepseek|deploy|all]"; exit 1 ;;
+  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fineablation|fine|fineonly|coarsesplits|coarse|coarseablation|coarseonly|fusion|deepseek|deploy|all]"; exit 1 ;;
 esac
 
 echo "DONE. 合并主表:  find $OUT -name overall_metrics.csv"

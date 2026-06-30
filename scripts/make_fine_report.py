@@ -43,16 +43,25 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bootstrap_ci import bootstrap_compare, bootstrap_compare_macro  # noqa: E402
 
-# ---- configuration ---------------------------------------------------------
+# ---- configuration (parametrized by --task: fine | coarse) -----------------
 # (dir, region label, granularity, fusion subdir).  Main benchmark = last entry.
-SETTINGS = [
-    ("fine_utr3_gene", "3'UTR", "gene", "fusion_rnafm_eng"),
-    ("fine_cds_gene", "CDS", "gene", "fusion_mrnafm_eng"),
-    ("fine_full_gene", "full", "gene", "fusion_rnafm_eng"),
-    ("fine_full_isoform", "full", "isoform", "fusion_rnafm_eng"),
-]
+def settings_for(prefix):
+    return [
+        (f"{prefix}_utr3_gene", "3'UTR", "gene", "fusion_rnafm_eng"),
+        (f"{prefix}_cds_gene", "CDS", "gene", "fusion_mrnafm_eng"),
+        (f"{prefix}_full_gene", "full", "gene", "fusion_rnafm_eng"),
+        (f"{prefix}_full_isoform", "full", "isoform", "fusion_rnafm_eng"),
+    ]
+
+
+DEFAULT_LABELS = {"fine": ["Cell_body", "Dendrite", "Neuropil", "Axon", "Neurite"],
+                  "coarse": ["in_soma", "in_neurite"]}
+
+# defaults (fine); main() reassigns these globals from --task
+SETTINGS = settings_for("fine")
 MAIN = "fine_full_isoform"
-COMPARTMENTS = ["Cell_body", "Dendrite", "Neuropil", "Axon", "Neurite"]
+COMPARTMENTS = DEFAULT_LABELS["fine"]
+FIGPREFIX = "fig_fine"
 FM_VIEWS = ["utrbert", "rnafm", "mrnafm", "dnabert2"]   # single foundation-model views
 MODEL_ORDER = ["kmer", "length", "engineered", "rnatracker", "dm3loc",
                "utrbert", "rnafm", "mrnafm", "dnabert2", "deepseek_moe",
@@ -218,6 +227,7 @@ def _label_row(a, b, label, metric, n_boot, seed):
 
 # ---- figures ---------------------------------------------------------------
 def _save(fig, out_base):
+    out_base = out_base.replace("fig_fine_", FIGPREFIX + "_")   # task-specific filename prefix
     for ext in ("png", "pdf"):
         fig.savefig(f"{out_base}.{ext}", dpi=200, bbox_inches="tight")
     import matplotlib.pyplot as plt
@@ -350,9 +360,11 @@ def fig_region_ablation(results, boot, outdir):
 
 def fig_granularity(summ, outdir):
     import matplotlib.pyplot as plt
-    pairs = {"gene": "fine_full_gene", "isoform": "fine_full_isoform"}
-    if not all(s in set(summ.setting) for s in pairs.values()):
-        print("  [skip] fig_fine_granularity: need both fine_full_gene and fine_full_isoform")
+    gene_dir = next((s[0] for s in SETTINGS if s[1] == "full" and s[2] == "gene"), None)
+    iso_dir = next((s[0] for s in SETTINGS if s[1] == "full" and s[2] == "isoform"), None)
+    pairs = {"gene": gene_dir, "isoform": iso_dir}
+    if not all(d in set(summ.setting) for d in pairs.values()):
+        print(f"  [skip] fig_fine_granularity: need both {gene_dir} and {iso_dir}")
         return
     present_canon = set(summ[summ.setting.isin(pairs.values())].model.map(canon))
     models = [m for m in CANON_ORDER if m in present_canon]
@@ -619,37 +631,59 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-bootstrap", action="store_true",
                     help="skip the (slow) group bootstraps; figures needing CIs are skipped")
+    ap.add_argument("--task", choices=["fine", "coarse"], default="fine",
+                    help="fine = 5 compartments (fine_* dirs); coarse = 2 non-exclusive "
+                    "labels in_soma/in_neurite (coarse_* dirs). Sets dirs, labels (read "
+                    "from label_classes.json), tables and figure-name prefix.")
     args = ap.parse_args()
+
+    global SETTINGS, MAIN, ABL, COMPARTMENTS, FIGPREFIX
+    SETTINGS = settings_for(args.task)
+    MAIN = f"{args.task}_full_isoform"
+    ABL = f"{args.task}_ablation_region"
+    FIGPREFIX = f"fig_{args.task}"
+    # labels: read from the main run's label_classes.json, else task default
+    COMPARTMENTS = DEFAULT_LABELS[args.task]
+    base = args.results_dir / MAIN
+    if base.exists():
+        for sub in sorted(os.listdir(base)):
+            lc = base / sub / "label_classes.json"
+            if lc.exists():
+                try:
+                    COMPARTMENTS = json.loads(lc.read_text(encoding="utf-8")); break
+                except Exception:
+                    pass
 
     summ, per = load_summary(args.results_dir)
     if summ.empty:
-        raise SystemExit(f"No fine_* runs with overall_metrics.csv under {args.results_dir}. "
-                         "Run: bash scripts/run_all.sh fineonly")
-    summ.to_csv(args.results_dir / "fine_summary_long.csv", index=False)
-    per.to_csv(args.results_dir / "fine_per_label_long.csv", index=False)
-    print(f"[tables] fine_summary_long.csv ({len(summ)} rows), "
-          f"fine_per_label_long.csv ({len(per)} rows)")
+        raise SystemExit(f"No {args.task}_* runs with overall_metrics.csv under "
+                         f"{args.results_dir}. Run: bash scripts/run_all.sh {args.task}only")
+    summ.to_csv(args.results_dir / f"{args.task}_summary_long.csv", index=False)
+    per.to_csv(args.results_dir / f"{args.task}_per_label_long.csv", index=False)
+    print(f"[task={args.task}] labels={COMPARTMENTS} main={MAIN}")
+    print(f"[tables] {args.task}_summary_long.csv ({len(summ)} rows), "
+          f"{args.task}_per_label_long.csv ({len(per)} rows)")
     for sdir, *_ in SETTINGS:
         bf = best_fm(summ, sdir)
         if bf:
             print(f"  best single FM in {sdir}: {bf} (val-selected)")
 
     boot = pd.DataFrame()
-    boot_path = args.results_dir / "fine_bootstrap.csv"
+    boot_path = args.results_dir / f"{args.task}_bootstrap.csv"
     if args.no_bootstrap:
         if boot_path.exists():            # reuse cached bootstrap so figures still get CIs
             boot = pd.read_csv(boot_path)
             print(f"[bootstrap] --no-bootstrap: loaded cached {boot_path.name} "
                   f"({len(boot)} comparisons)")
         else:
-            print("[bootstrap] --no-bootstrap and no cached fine_bootstrap.csv; "
+            print(f"[bootstrap] --no-bootstrap and no cached {boot_path.name}; "
                   "CI figures will be skipped")
     else:
         print(f"[bootstrap] n_boot={args.n_boot} (group resampling by split_group) ...")
         boot = run_bootstraps(args.results_dir, summ, args.n_boot, args.seed)
         if not boot.empty:
             boot.to_csv(boot_path, index=False)
-            print(f"  fine_bootstrap.csv ({len(boot)} comparisons)")
+            print(f"  {boot_path.name} ({len(boot)} comparisons)")
         else:
             print("  [bootstrap] no comparable runs (missing test_predictions.csv)")
 
