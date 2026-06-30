@@ -193,7 +193,7 @@ def seqtype_is_native_utr3(st: str) -> bool:
 
 
 def apply_region(rep: pd.DataFrame, region: str, L5map: dict, L3map: dict,
-                 native_sources=None) -> pd.DataFrame:
+                 native_sources=None, add_native_utr3=False) -> pd.DataFrame:
     """Harmonize each row to `region`, routed by sequence_type + an explicit
     per-source override.
 
@@ -227,6 +227,12 @@ def apply_region(rep: pd.DataFrame, region: str, L5map: dict, L3map: dict,
         src_col, st_col, rep["transcript_id"].astype(str), rep["sequence"].astype(str)
     ):
         n = len(s)
+        # Augment ANY region with native 3'UTR isoform sequences (passed through
+        # untouched): lets a CDS/full arm carry the same native-3'UTR isoform backbone
+        # as the 3'UTR arm for the sequence-resolved comparison. Off by default so the
+        # matched-gene region ablation stays region-pure.
+        if add_native_utr3 and (is_native_src(src) or seqtype_is_native_utr3(st)):
+            seqs.append(s); n_pass += 1; continue
         if region == "utr3":
             if is_native_src(src) or seqtype_is_native_utr3(st):
                 seqs.append(s); n_pass += 1; continue
@@ -1605,6 +1611,11 @@ def main():
                     "sequence_type is treated as full-length and GTF-extracted, so a "
                     "merged bulk+isoform file's blank-tagged bulk transcripts are not "
                     "silently used at full length under --region utr3.")
+    ap.add_argument("--add-native-utr3-isoforms", action="store_true",
+                    help="also keep native 3'UTR isoform sequences (pass-through) under "
+                    "--region cds/full, so a CDS/full arm carries the same native-3'UTR "
+                    "isoform backbone as the 3'UTR arm (sequence-resolved comparison). "
+                    "Leave OFF for the matched-gene region ablation (region-pure).")
     ap.add_argument("--label-scheme",
                     choices=["soma_vs_neurite", "soma_neurite_multilabel", "fine"],
                     default="soma_vs_neurite",
@@ -1769,7 +1780,8 @@ def main():
     if args.region != "full":
         L5map, L3map = build_utr_length_map(args.gtf)
         all_rows = apply_region(all_rows, args.region, L5map, L3map,
-                                native_sources=args.native_region_sources)
+                                native_sources=args.native_region_sources,
+                                add_native_utr3=args.add_native_utr3_isoforms)
         if len(all_rows) == 0:
             raise SystemExit(f"[error] region={args.region}: 0 rows survived region harmonization.")
 
