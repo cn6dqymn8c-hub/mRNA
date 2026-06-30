@@ -320,6 +320,8 @@ def build_gene_dataset(rep: pd.DataFrame, keep_assay: bool) -> pd.DataFrame:
             "sources": src_names,
             "n_sources": n_sources,
             "neurite_frac": neurite_frac,
+            "n_neur": int(n_neur),
+            "n_soma": int(n_soma),
             "binary_conflict": bool(n_neur > 0 and n_soma > 0),
         })
     return pd.DataFrame(rows)
@@ -412,6 +414,8 @@ def build_sample_dataset(big: pd.DataFrame, sample_level: str, keep_assay: bool)
             "sources": sorted(per_source_sets.keys()),
             "n_sources": len(per_source_sets),
             "neurite_frac": (n_neur / denom) if denom else np.nan,
+            "n_neur": int(n_neur),
+            "n_soma": int(n_soma),
             "binary_conflict": bool(n_neur > 0 and n_soma > 0),
         })
     print(f"[sample-level={sample_level}] {len(big)} rows -> {len(udf)} units -> {len(out)} samples")
@@ -467,13 +471,24 @@ def apply_label_scheme(
         df["sample_weight"] = w
         return df, ["is_neurite"], w, np.ones((len(df), 1), dtype=np.float32)
 
-    classes_all = list(FINE_SYNAP_LABELS if separate_synap else FINE_LABELS)
-    if keep_assay:
-        # Promote assay-readout labels (Ribosome/Cytoplasm) to extra target classes.
-        # Per-label source-mask keeps them honest (only sources that ran the assay
-        # contribute negatives); they live on a different (translation/fractionation)
-        # axis than the anatomical compartments and should be reported separately.
-        classes_all = classes_all + [c for c in ASSAY_LABEL_ORDER if c not in classes_all]
+    if scheme == "soma_neurite_multilabel":
+        # Coarse soma/neurite as TWO INDEPENDENT labels (a transcript can be in both):
+        # in_soma = {Cell_body}; in_neurite = {Dendrite,Neuropil,Axon,Neurite}. Same
+        # per-label soft-aggregation + source-mask as fine, so an unobserved axis stays
+        # unknown (mask=0) rather than a false negative — i.e. NOT a mutually exclusive
+        # axis like soma_vs_neurite.
+        classes_all = ["in_soma", "in_neurite"]
+        group_of = {"in_soma": SOMA_LABELS, "in_neurite": NEURITE_LABELS}
+        pos_col = {"in_soma": "n_soma", "in_neurite": "n_neur"}
+    else:
+        classes_all = list(FINE_SYNAP_LABELS if separate_synap else FINE_LABELS)
+        if keep_assay:
+            # Promote assay-readout labels (Ribosome/Cytoplasm) to extra target classes.
+            # Per-label source-mask keeps them honest (only sources that ran the assay
+            # contribute negatives); they live on a different (translation/fractionation)
+            # axis than the anatomical compartments and should be reported separately.
+            classes_all = classes_all + [c for c in ASSAY_LABEL_ORDER if c not in classes_all]
+        group_of = None
     n = len(df)
     target_all = np.zeros((n, len(classes_all)), dtype=np.int8)
     mask_all = np.zeros((n, len(classes_all)), dtype=np.float32)
@@ -485,10 +500,16 @@ def apply_label_scheme(
         n_total_sources = max(int(row["n_sources"]), 1)
 
         for j, c in enumerate(classes_all):
-            pos_count = int(counts.get(c, 0))
+            if group_of is not None:
+                grp = group_of[c]
+                pos_count = int(row[pos_col[c]])     # unique sources reporting any label in grp
+                cap_test = (lambda cap: bool(grp & cap))
+            else:
+                pos_count = int(counts.get(c, 0))
+                cap_test = (lambda cap, _c=c: _c in cap)
             if use_source_mask:
                 eligible_count = sum(
-                    1 for s in sources if c in (source_label_sets or {}).get(s, set())
+                    1 for s in sources if cap_test((source_label_sets or {}).get(s, set()))
                 )
                 known = eligible_count > 0
             else:
@@ -1584,7 +1605,12 @@ def main():
                     "sequence_type is treated as full-length and GTF-extracted, so a "
                     "merged bulk+isoform file's blank-tagged bulk transcripts are not "
                     "silently used at full length under --region utr3.")
-    ap.add_argument("--label-scheme", choices=["soma_vs_neurite", "fine"], default="soma_vs_neurite")
+    ap.add_argument("--label-scheme",
+                    choices=["soma_vs_neurite", "soma_neurite_multilabel", "fine"],
+                    default="soma_vs_neurite",
+                    help="soma_vs_neurite = 1 mutually-exclusive label (is_neurite); "
+                    "soma_neurite_multilabel = 2 INDEPENDENT labels {in_soma,in_neurite} "
+                    "(a transcript can be in both); fine = 5 anatomical compartments.")
     ap.add_argument("--separate-synap", action="store_true",
                     help="for --label-scheme fine, keep Synap/Synapse/Synaptic as "
                     "a separate target class instead of harmonizing it into Neuropil. "
@@ -1721,8 +1747,9 @@ def main():
 
     if args.input_dir is None:
         raise SystemExit("[error] --input-dir is required unless --selftest is used.")
-    if args.label_scheme == "fine" and not args.source_mask:
-        raise SystemExit("[error] --label-scheme fine requires --source-mask.")
+    if args.label_scheme in ("fine", "soma_neurite_multilabel") and not args.source_mask:
+        raise SystemExit(f"[error] --label-scheme {args.label_scheme} requires --source-mask "
+                         "(unobserved axis must stay unknown, not a false negative).")
     configure_label_harmonization(args.separate_synap)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1875,8 +1902,8 @@ def main():
     print(f"[data] agg={args.label_agg} {len(genes)} samples, classes={classes}")
     print("[data] per-class support:",
           {c: int((Y[:, j] * label_mask_full[:, j]).sum()) for j, c in enumerate(classes)})
-    if args.label_scheme == "fine":
-        print("[source-mask fine] per-label evaluable coverage:",
+    if args.label_scheme in ("fine", "soma_neurite_multilabel"):
+        print(f"[source-mask {args.label_scheme}] per-label evaluable coverage:",
               {c: round(float(label_mask_full[:, j].mean()), 3) for j, c in enumerate(classes)})
 
     uid = genes["_uid"].to_numpy()
