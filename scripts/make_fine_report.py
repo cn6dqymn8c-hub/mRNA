@@ -55,19 +55,21 @@ MAIN = "fine_full_isoform"
 COMPARTMENTS = ["Cell_body", "Dendrite", "Neuropil", "Axon", "Neurite"]
 FM_VIEWS = ["utrbert", "rnafm", "mrnafm", "dnabert2"]   # single foundation-model views
 MODEL_ORDER = ["kmer", "length", "engineered", "rnatracker", "dm3loc",
-               "utrbert", "rnafm", "mrnafm", "dnabert2",
+               "utrbert", "rnafm", "mrnafm", "dnabert2", "deepseek_moe",
                "fusion_rnafm_eng", "fusion_mrnafm_eng"]
 MODEL_LABEL = {"kmer": "k-mer", "length": "length", "engineered": "engineered",
                "rnatracker": "RNATracker", "dm3loc": "DM3Loc", "utrbert": "UTR-BERT",
                "rnafm": "RNA-FM", "mrnafm": "mRNA-FM", "dnabert2": "DNABERT-2",
+               "deepseek_moe": "DeepSeek-MoE",
                "fusion_rnafm_eng": "fusion", "fusion_mrnafm_eng": "fusion"}
+C_LLM = "#e07b39"
 ABL = "fine_ablation_region"
 BASELINES = {"label_prior_probability", "all_zero"}
 C_FUS, C_KMER, C_FM, C_ENG, C_NET = "#d1495b", "#8d99ae", "#3a7ca5", "#5c946e", "#9b6a9e"
 
 
 CANON_ORDER = ["kmer", "length", "engineered", "rnatracker", "dm3loc",
-               "utrbert", "rnafm", "mrnafm", "dnabert2", "fusion"]
+               "utrbert", "rnafm", "mrnafm", "dnabert2", "deepseek_moe", "fusion"]
 
 
 def canon(model):
@@ -84,6 +86,8 @@ def _color(model):
         return C_NET
     if model in ("length", "engineered"):
         return C_ENG
+    if model == "deepseek_moe":
+        return C_LLM
     return C_FM
 
 

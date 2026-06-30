@@ -1633,6 +1633,30 @@ def main():
     ap.add_argument("--ts-patience", type=int, default=5)
     ap.add_argument("--ts-batch", type=int, default=32)
     ap.add_argument("--ts-lr", type=float, default=1e-3)
+    # ---- general-LLM encoder (e.g. DeepSeekMoE) via QLoRA -------------------
+    ap.add_argument("--llm-encoder", default=None,
+                    help="HF id / path of a general LLM (e.g. deepseek-ai/deepseek-moe-16b-base) "
+                    "to adapt as a sequence encoder via QLoRA. Controlled benchmark entry: same "
+                    "split/labels/eval as other models. KEEPS the model's text BPE tokenizer "
+                    "(cross-modal transfer is tested, not assumed). Not usable with "
+                    "--arch nets / --finetune / --fusion / --features.")
+    ap.add_argument("--llm-4bit", action="store_true", default=True,
+                    help="load the base in 4-bit (QLoRA); fits a 16B MoE on one 24GB GPU.")
+    ap.add_argument("--no-llm-4bit", dest="llm_4bit", action="store_false")
+    ap.add_argument("--llm-lora", action="store_true", default=True)
+    ap.add_argument("--no-llm-lora", dest="llm_lora", action="store_false")
+    ap.add_argument("--llm-lora-r", type=int, default=16)
+    ap.add_argument("--llm-lora-alpha", type=int, default=32)
+    ap.add_argument("--llm-target-modules", default=None,
+                    help="comma list of LoRA target module names; default 'all-linear'.")
+    ap.add_argument("--llm-max-tokens", type=int, default=1024,
+                    help="BPE-token truncation length for the LLM encoder.")
+    ap.add_argument("--llm-pool", choices=["mean", "last"], default="mean")
+    ap.add_argument("--llm-batch", type=int, default=4)
+    ap.add_argument("--llm-grad-accum", type=int, default=8)
+    ap.add_argument("--llm-epochs", type=int, default=3)
+    ap.add_argument("--llm-patience", type=int, default=2)
+    ap.add_argument("--llm-lr", type=float, default=1e-4)
     # ---- foundation-model fine-tune -----------------------------------------
     ap.add_argument("--finetune", action="store_true")
     ap.add_argument("--ft-epochs", type=int, default=4)
@@ -1681,6 +1705,9 @@ def main():
     args = ap.parse_args()
 
     is_task_specific = args.arch in ("rnatracker", "dm3loc")
+    if args.llm_encoder and (is_task_specific or args.finetune or args.fusion or args.features):
+        raise SystemExit("[error] --llm-encoder is a standalone encoder; not usable with "
+                         "--arch nets / --finetune / --fusion / --features.")
 
     if args.selftest:
         import torch
@@ -1791,6 +1818,9 @@ def main():
     elif args.finetune:
         feat_tag = os.path.basename(os.path.normpath(args.model_dir))
         emb_full = None
+    elif args.llm_encoder:
+        feat_tag = os.path.basename(os.path.normpath(args.llm_encoder))
+        emb_full = None
     elif args.features:
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1850,7 +1880,7 @@ def main():
               {c: round(float(label_mask_full[:, j].mean()), 3) for j, c in enumerate(classes)})
 
     uid = genes["_uid"].to_numpy()
-    emb = None if (args.finetune or is_task_specific or args.fusion) else emb_full[uid]
+    emb = None if (args.finetune or is_task_specific or args.fusion or args.llm_encoder) else emb_full[uid]
     feature_blocks = [b[uid] for b in feature_blocks_full] if args.fusion else None
 
     ortholog_map = load_ortholog_map(args.ortholog_map)
@@ -1923,6 +1953,16 @@ def main():
         )
         scaler = models = None
         run_name = f"{feat_tag}_finetune_{args.region}_{args.ft_long_seq_policy}"
+    elif args.llm_encoder:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from llm_encoder import train_llm_encoder
+        prob_va, prob_te = train_llm_encoder(
+            genes, Y, classes, tr_idx, va_idx, te_idx, args,
+            sample_weight=sw_all, label_mask=label_mask_full,
+        )
+        scaler = models = None
+        run_name = f"{feat_tag}_llm_{args.region}"
     elif args.fusion:
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

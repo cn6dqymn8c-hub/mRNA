@@ -319,6 +319,24 @@ fusion() {
 }
 
 # ---------------------------------------------------------------------------
+# deepseek —— 通用 LLM(DeepSeekMoE)经 QLoRA 适配为序列编码器,作为受控对照接入
+#   主 benchmark(全长×isoform,fine split)。保留原文本 BPE 分词器(跨模态迁移是被
+#   检验而非假设)。重活,不进 all;单卡 24GB(4-bit)即可,用 DS_GPU 选空闲卡。
+#   产物 results/fine_full_isoform/deepseek_moe → make_fine_report 自动纳入对比。
+#   用法: DS_GPU=2 bash scripts/run_all.sh deepseek
+# ---------------------------------------------------------------------------
+deepseek() {
+  local C=(--label-scheme fine --label-agg soft --source-mask --classifier logistic
+           --min-support 200 --seed 0 --ortholog-map "$ORTHO" "${SPECIES[@]}")
+  local SP4="$SPLIT_DIR/split_fine_full_isoform.csv" O4="$OUT/fine_full_isoform"
+  CUDA_VISIBLE_DEVICES="${DS_GPU:-0}" $PY $TRAIN --input-dir "$INPUT_DIR" --region full \
+    --sample-level isoform_sequence_union "${C[@]}" --split-assignments "$SP4" \
+    --llm-encoder "${DS_MODEL:-deepseek-ai/deepseek-moe-16b-base}" --llm-4bit \
+    --llm-max-tokens "${DS_MAXTOK:-1024}" --llm-batch "${DS_BATCH:-4}" \
+    --output-dir "$O4/deepseek_moe"
+}
+
+# ---------------------------------------------------------------------------
 # deploy —— 最终部署模型:全长 fusion(基准里最优,ROC-AUC 0.70),用 --train-on-all
 #   在【全部样本】上重拟合(无 held-out;报告指标用 benchmark 的 fusion 那次,不是这次的
 #   in-sample 数)。产出 fusion_model.joblib + run_config.json + label_thresholds.csv,
@@ -338,6 +356,7 @@ case "${1:-all}" in
   splits)     make_splits; make_fine_splits ;;
   finesplits) make_fine_splits ;;
   fusion)   fusion ;;
+  deepseek) deepseek ;;
   deploy)   deploy ;;
   track1a)  track1a ;;
   track1b)  track1b ;;
@@ -349,7 +368,7 @@ case "${1:-all}" in
   fine)     fine ;;
   fineonly) make_fine_splits; fine; fineablation ;;
   all)      make_splits; make_fine_splits; track1a; track1b; track2; track3; track3isoform; ablation; fine; fineablation ;;
-  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fineablation|fine|fineonly|fusion|deploy|all]"; exit 1 ;;
+  *) echo "usage: $0 [splits|finesplits|track1a|track1b|track2|track3|track3isoform|ablation|fineablation|fine|fineonly|fusion|deepseek|deploy|all]"; exit 1 ;;
 esac
 
 echo "DONE. 合并主表:  find $OUT -name overall_metrics.csv"
